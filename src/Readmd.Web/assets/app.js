@@ -650,9 +650,11 @@ function lbApply() {
 }
 function lbZoom(factor, cx, cy) {
   const prev = lbState.scale;
-  const next = Math.min(8, Math.max(0.2, prev * factor));
+  // High ceiling so a wide/long diagram can be enlarged far past "fit"; vector stays crisp.
+  const next = Math.min(80, Math.max(0.02, prev * factor));
   if (cx != null) {
-    // Keep the point under the cursor stationary while zooming.
+    // Keep the point under the cursor stationary while zooming (center-relative, matching the
+    // canvas's center transform-origin and the flex-centered stage).
     const rect = lbStage.getBoundingClientRect();
     const ox = cx - rect.left - rect.width / 2;
     const oy = cy - rect.top - rect.height / 2;
@@ -662,6 +664,13 @@ function lbZoom(factor, cx, cy) {
   lbState.scale = next;
   lbApply();
 }
+function lbReset() {
+  // Reset to the fit-to-window baseline (not 1:1), which is the useful "see the whole thing" view.
+  lbState.scale = lbState.base || 1;
+  lbState.x = 0;
+  lbState.y = 0;
+  lbApply();
+}
 // Serialize an <svg> to well-formed XML. mermaid's htmlLabels emit <foreignObject> HTML (e.g. an
 // unclosed <br>); outerHTML preserves that HTML flavor, which is invalid SVG/XML. XMLSerializer
 // self-closes void elements so Copy produces valid SVG and Open can parse it.
@@ -669,23 +678,37 @@ function serializeSvg(svgEl) {
   try { return new XMLSerializer().serializeToString(svgEl); }
   catch { return svgEl.outerHTML; }
 }
+// Reads an SVG's natural size from its viewBox (falling back to width/height attrs or the rendered
+// box), used to size the lightbox reliably instead of relying on CSS auto-sizing (which collapses
+// very wide/short diagrams to a sliver or a 300x150 default).
+function svgNaturalSize(svg) {
+  const vb = svg.viewBox && svg.viewBox.baseVal;
+  const w = (vb && vb.width) || parseFloat(svg.getAttribute("width")) || svg.getBoundingClientRect().width || 800;
+  const h = (vb && vb.height) || parseFloat(svg.getAttribute("height")) || svg.getBoundingClientRect().height || 600;
+  return { w, h };
+}
 function openLightbox(svgEl) {
   const svgText = serializeSvg(svgEl);
-  lbState = { scale: 1, x: 0, y: 0, dragging: false, sx: 0, sy: 0, svg: svgText };
   lbCanvas.innerHTML = svgText;
   const inner = lbCanvas.querySelector("svg");
+  let natW = 800, natH = 600;
   if (inner) {
-    // Fit-to-stage on open (contain): keep the viewBox, drop the fixed px dimensions, and constrain
-    // BOTH width and height so a wide/short diagram is fully visible. Previously maxWidth was set to
-    // "none", so the CSS max-height:80vh scaled a wide diagram to an enormous width that centered
-    // off-screen (the modal looked empty). Zoom/pan enlarges from this fitted baseline.
-    inner.removeAttribute("width");
-    inner.removeAttribute("height");
-    inner.style.maxWidth = "92vw";
-    inner.style.maxHeight = "82vh";
-    inner.style.width = "auto";
-    inner.style.height = "auto";
+    const s = svgNaturalSize(inner);
+    natW = s.w; natH = s.h;
+    // Pin the SVG to its natural pixel size and let the canvas transform do ALL sizing/zooming. This
+    // is robust for extreme aspect ratios where CSS max-width/height auto-sizing renders nothing.
+    inner.removeAttribute("style");
+    inner.setAttribute("width", natW);
+    inner.setAttribute("height", natH);
+    inner.style.maxWidth = "none";
+    inner.style.maxHeight = "none";
+    inner.style.display = "block";
   }
+  // Fit the natural size within the stage (contain).
+  const rect = lbStage.getBoundingClientRect();
+  let base = Math.min((rect.width * 0.94) / natW, (rect.height * 0.9) / natH);
+  if (!isFinite(base) || base <= 0) base = 1;
+  lbState = { scale: base, x: 0, y: 0, dragging: false, sx: 0, sy: 0, svg: svgText, base, natW, natH };
   lbApply();
   lbLastFocus = document.activeElement;
   lightbox.classList.remove("readmd-hidden");
@@ -741,23 +764,50 @@ document.getElementById("readmd-lightbox-toolbar")?.addEventListener("click", as
   const act = e.target.closest("button")?.getAttribute("data-act");
   if (act === "in") lbZoom(1.25);
   else if (act === "out") lbZoom(1 / 1.25);
-  else if (act === "reset") { lbState.scale = 1; lbState.x = 0; lbState.y = 0; lbApply(); }
+  else if (act === "reset") lbReset();
   else if (act === "close") closeLightbox();
   else if (act === "copy") { try { await navigator.clipboard.writeText(lbState.svg); flashStatus("SVG copied"); } catch { flashStatus("Copy failed", true); } }
   else if (act === "open") {
-    // Open in a new tab wrapped in an HTML document (NOT image/svg+xml). mermaid's htmlLabels emit
-    // <foreignObject> HTML such as an unclosed <br>, which a strict SVG/XML parser rejects ("Opening
-    // and ending tag mismatch: br … p"). The lenient HTML parser renders it correctly; the white
-    // background matches the in-app diagram card.
-    const doc = `<!doctype html><html><head><meta charset="utf-8"><title>Diagram</title>` +
-      `<style>html,body{margin:0;height:100%}body{display:flex;align-items:center;justify-content:center;background:#fff}` +
-      `svg{max-width:100vw;max-height:100vh;width:auto;height:auto}</style></head><body>${lbState.svg}</body></html>`;
-    const url = URL.createObjectURL(new Blob([doc], { type: "text/html" }));
+    // Open in a new tab as a self-contained pan/zoom viewer so the diagram can be enlarged far
+    // beyond the browser's own zoom limit (~500%) and stays crisp (it's vector). Wrapping in HTML
+    // (not image/svg+xml) also avoids the strict-XML parse error on mermaid's <foreignObject> labels.
+    const url = URL.createObjectURL(new Blob([buildSvgViewerHtml(lbState.svg)], { type: "text/html" }));
     window.open(url, "_blank", "noopener");
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    setTimeout(() => URL.revokeObjectURL(url), 15000);
   }
 });
 lightbox?.addEventListener("click", (e) => { if (e.target === lightbox) closeLightbox(); });
+
+// Builds a self-contained HTML page that shows an SVG string in a pan/zoom viewer (wheel = zoom to
+// cursor, drag = pan, buttons/keys, no browser-zoom ceiling). Used by the lightbox "Open" action.
+function buildSvgViewerHtml(svgText) {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Diagram</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#fff}
+#s{position:fixed;inset:0;overflow:hidden;cursor:grab;touch-action:none;display:flex;align-items:center;justify-content:center}
+#c{transform-origin:center center;will-change:transform}#c svg{display:block;background:#fff}
+#b{position:fixed;top:10px;left:50%;transform:translateX(-50%);display:flex;gap:6px;z-index:5}
+#b button{border:1px solid #d0d7de;background:#f6f8fa;border-radius:6px;min-width:36px;padding:6px 10px;cursor:pointer;font:14px system-ui}</style></head>
+<body><div id="b"><button data-a="out">&#8722;</button><button data-a="fit">Fit</button><button data-a="in">+</button></div>
+<div id="s"><div id="c">${svgText}</div></div>
+<script>
+var s=document.getElementById('s'),c=document.getElementById('c'),svg=c.querySelector('svg');
+var natW=800,natH=600;
+if(svg){var vb=svg.viewBox&&svg.viewBox.baseVal;natW=(vb&&vb.width)||parseFloat(svg.getAttribute('width'))||800;natH=(vb&&vb.height)||parseFloat(svg.getAttribute('height'))||600;svg.removeAttribute('style');svg.setAttribute('width',natW);svg.setAttribute('height',natH);svg.style.maxWidth='none';svg.style.maxHeight='none';}
+var st={scale:1,x:0,y:0};
+function ap(){c.style.transform='translate('+st.x+'px,'+st.y+'px) scale('+st.scale+')';}
+function fit(){var b=Math.min((s.clientWidth*0.94)/natW,(s.clientHeight*0.9)/natH);if(!isFinite(b)||b<=0)b=1;st.scale=b;st.x=0;st.y=0;ap();}
+function zoom(f,cx,cy){var p=st.scale,n=Math.min(80,Math.max(0.02,p*f));var r=s.getBoundingClientRect();var ox=(cx!=null?cx:r.left+r.width/2)-r.left-r.width/2;var oy=(cy!=null?cy:r.top+r.height/2)-r.top-r.height/2;st.x=ox-(ox-st.x)*(n/p);st.y=oy-(oy-st.y)*(n/p);st.scale=n;ap();}
+s.addEventListener('wheel',function(e){e.preventDefault();zoom(e.deltaY<0?1.15:1/1.15,e.clientX,e.clientY);},{passive:false});
+s.addEventListener('dblclick',function(e){zoom(1.6,e.clientX,e.clientY);});
+var dg=false,dx=0,dy=0;
+s.addEventListener('pointerdown',function(e){dg=true;dx=e.clientX-st.x;dy=e.clientY-st.y;s.setPointerCapture(e.pointerId);s.style.cursor='grabbing';});
+s.addEventListener('pointermove',function(e){if(!dg)return;st.x=e.clientX-dx;st.y=e.clientY-dy;ap();});
+s.addEventListener('pointerup',function(e){dg=false;s.style.cursor='grab';});
+document.getElementById('b').addEventListener('click',function(e){var a=e.target.getAttribute('data-a');if(a==='in')zoom(1.25);else if(a==='out')zoom(1/1.25);else if(a==='fit')fit();});
+window.addEventListener('keydown',function(e){if(e.key==='+'||e.key==='=')zoom(1.25);else if(e.key==='-'||e.key==='_')zoom(1/1.25);else if(e.key==='0')fit();});
+window.addEventListener('resize',fit);fit();
+</script></body></html>`;
+}
 
 // ---------------- view toggles (sidebar / toolbar / zen) ----------------
 const layout = document.getElementById("readmd-layout");
@@ -881,7 +931,7 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { e.preventDefault(); closeLightbox(); return; }
     if (e.key === "+" || e.key === "=") { e.preventDefault(); lbZoom(1.25); return; }
     if (e.key === "-" || e.key === "_") { e.preventDefault(); lbZoom(1 / 1.25); return; }
-    if (e.key === "0") { e.preventDefault(); lbState.scale = 1; lbState.x = 0; lbState.y = 0; lbApply(); return; }
+    if (e.key === "0") { e.preventDefault(); lbReset(); return; }
     return; // swallow other keys while the lightbox is open
   }
 

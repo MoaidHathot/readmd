@@ -9,8 +9,8 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>readmd</ToolCommandName>
     <PackageId>readmd</PackageId>
-    <Version>0.8.0</Version>
-    <InformationalVersion>0.8.0</InformationalVersion>
+    <Version>0.8.1</Version>
+    <InformationalVersion>0.8.1</InformationalVersion>
     <!-- Keep the version line clean ("readmd 0.4.0"): don't let SourceLink append a +commit suffix
          to the informational version, which Program.cs reads for the branded version output. -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>

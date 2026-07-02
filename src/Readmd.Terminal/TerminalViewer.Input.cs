@@ -1007,6 +1007,16 @@ public sealed partial class TerminalViewer
             }
             else
             {
+                // OS image viewers show a raster, so resolution is fixed once written. For mermaid
+                // (PNG-only) render a large high-resolution PNG on demand so the viewer has real
+                // detail to zoom into; other types use the original file or their existing PNG.
+                DiagramRequest? diagram = null;
+                lock (_stateLock) { _pendingDiagrams.TryGetValue(key, out diagram); }
+                if (diagram is { Kind: DiagramKind.Mermaid })
+                {
+                    OpenMermaidHiResInViewer(diagram, result, dir, safe);
+                    return;
+                }
                 // Prefer the original local file (best fidelity, e.g. animated GIF) when we have it.
                 string? local = TryResolveLocalImage(key);
                 string path = local ?? Path.Combine(dir, safe + ".png");
@@ -1019,6 +1029,35 @@ public sealed partial class TerminalViewer
         {
             SetStatus("Open failed: " + ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Renders the mermaid diagram at a high scale (targeting a large long-edge) and opens that PNG in
+    /// the OS image viewer, so a wide/long diagram is big enough to inspect. Runs in the background
+    /// because the re-render goes through the browser backend.
+    /// </summary>
+    private void OpenMermaidHiResInViewer(DiagramRequest request, DiagramResult baseResult, string dir, string safe)
+    {
+        SetStatus("Rendering high-resolution image…", 10);
+        var theme = _diagramTheme;
+        int basePx = Math.Max(baseResult.PixelWidth, baseResult.PixelHeight);
+        // Scale (relative to the base 2× render) so the long edge lands near ~6000px, capped at the
+        // renderer's max (4 ⇒ device scale 8).
+        double scale = basePx > 0 ? Math.Clamp(6000.0 / basePx, 1.0, 4.0) : 4.0;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var hi = await _diagrams.RenderAtScaleAsync(request, theme, scale, _lifetimeCts.Token);
+                var png = hi is { Status: DiagramStatus.Ready, Png: not null } ? hi.Png : baseResult.Png;
+                if (png is null) { SetStatus("Image not ready"); return; }
+                var path = Path.Combine(dir, safe + ".png");
+                await File.WriteAllBytesAsync(path, png, _lifetimeCts.Token);
+                OpenUrl(path);
+                SetStatus("Opened in image viewer");
+            }
+            catch (Exception ex) { SetStatus("Open failed: " + ex.Message); }
+        });
     }
 
     /// <summary>Resolves an image key back to its on-disk source path when it's a local (non-remote) image.</summary>

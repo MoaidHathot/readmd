@@ -187,6 +187,19 @@ public class MermaidHtmlTests
         // The bundled mermaid.js (~MBs) is inlined so the page is fully self-contained/offline.
         Assert.True(html.Length > 100_000, $"expected mermaid.js inlined, page was {html.Length} bytes");
     }
+
+    [Fact]
+    public void Includes_a_custom_pan_zoom_viewer()
+    {
+        var html = MermaidHtml.BuildStandalonePage("graph TD; A-->B;", dark: false);
+        // A wide/long diagram must be enlargeable past the browser's ~500% zoom ceiling, so the page
+        // ships its own transform-based zoom/pan (wheel + drag) rather than relying on browser zoom.
+        Assert.Contains("id=\"stage\"", html);
+        Assert.Contains("addEventListener('wheel'", html);
+        Assert.Contains("function zoom", html);
+        Assert.DoesNotContain("__CONFIG__", html);    // all tokens were substituted
+        Assert.DoesNotContain("__MERMAIDJS__", html);
+    }
 }
 
 
