@@ -32,7 +32,7 @@ internal sealed class MermaidCliRenderer
         catch { return false; }
     }
 
-    public async Task<DiagramResult> RenderAsync(DiagramRequest request, DiagramTheme theme, CancellationToken ct)
+    public async Task<DiagramResult> RenderAsync(DiagramRequest request, DiagramTheme theme, CancellationToken ct, double renderScale = 1.0)
     {
         var dir = Path.Combine(Path.GetTempPath(), "readmd-mmdc", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
@@ -52,7 +52,7 @@ internal sealed class MermaidCliRenderer
             // the Playwright renderer do by setting the page text color.
             await File.WriteAllTextAsync(cssFile, CssFor(theme), ct);
 
-            await RunMmdcAsync(input, output, configFile, cssFile, ct);
+            await RunMmdcAsync(input, output, configFile, cssFile, renderScale, ct);
             if (!File.Exists(output))
                 return DiagramResult.Fail(request.Key, "mmdc produced no output.");
 
@@ -99,13 +99,15 @@ internal sealed class MermaidCliRenderer
             """;
     }
 
-    private async Task RunMmdcAsync(string input, string output, string configFile, string cssFile, CancellationToken ct)
+    private async Task RunMmdcAsync(string input, string output, string configFile, string cssFile, double renderScale, CancellationToken ct)
     {
-        // -s 2 renders at 2x for crisp text when scaled into the terminal; -b transparent keeps the
+        // -s N renders at N× for crisp text when scaled into the terminal; -b transparent keeps the
         // diagram background see-through so the theme background shows behind it; -C applies our CSS
-        // (the SVG `color` that makes currentColor-driven gantt grid lines visible).
+        // (the SVG `color` that makes currentColor-driven gantt grid lines visible). The base scale is
+        // 2; a higher renderScale (zoomed view) bumps it, clamped so it can't explode.
+        int scale = Math.Clamp((int)Math.Round(2.0 * renderScale), 2, 8);
         var psi = ExecutableResolver.Resolve(_mmdcPath,
-            ["-i", input, "-o", output, "-c", configFile, "-C", cssFile, "-b", "transparent", "-s", "2"])
+            ["-i", input, "-o", output, "-c", configFile, "-C", cssFile, "-b", "transparent", "-s", scale.ToString()])
             ?? throw new MmdcNotFoundException();
 
         using var proc = new Process { StartInfo = psi };

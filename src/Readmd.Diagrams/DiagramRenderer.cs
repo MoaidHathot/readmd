@@ -102,6 +102,32 @@ public sealed class DiagramRenderer : IDiagramRenderer
         return _inflight.GetOrAdd(composedKey, _ => RenderUncachedAsync(request, theme, composedKey, ct));
     }
 
+    /// <summary>
+    /// Renders a fresh, higher-resolution variant for zoomed viewing. These are NOT cached (neither
+    /// the on-disk store nor the inflight map) because they're keyed only by content/theme, and we
+    /// don't want a hi-res variant to shadow or evict the normal render.
+    /// </summary>
+    public async Task<DiagramResult> RenderAtScaleAsync(DiagramRequest request, DiagramTheme theme, double scale, CancellationToken ct = default)
+    {
+        if (scale <= 1.0) return await RenderAsync(request, theme, ct);
+        await _renderGate.WaitAsync(ct);
+        try
+        {
+            return request.Kind switch
+            {
+                DiagramKind.D2 => await _d2.RenderAsync(request, theme, ct, scale),
+                DiagramKind.Graphviz => await _graphviz.RenderAsync(request, theme, ct, scale),
+                DiagramKind.PlantUml => await _plantUml.RenderAsync(request, theme, ct, scale),
+                DiagramKind.Mermaid => await RenderMermaidAsync(request, theme, ct, scale),
+                _ => DiagramResult.Fail(request.Key, "Unsupported diagram kind"),
+            };
+        }
+        finally
+        {
+            _renderGate.Release();
+        }
+    }
+
     private async Task<DiagramResult> RenderUncachedAsync(
         DiagramRequest request, DiagramTheme theme, string composedKey, CancellationToken ct)
     {
@@ -125,14 +151,14 @@ public sealed class DiagramRenderer : IDiagramRenderer
         }
     }
 
-    private async Task<DiagramResult> RenderMermaidAsync(DiagramRequest request, DiagramTheme theme, CancellationToken ct)
+    private async Task<DiagramResult> RenderMermaidAsync(DiagramRequest request, DiagramTheme theme, CancellationToken ct, double scale = 1.0)
     {
         EnsureMermaidBackend();
         // Prefer a local mmdc (lighter, no Chromium); fall back to the Playwright renderer.
         if (_mmdc is not null)
-            return await _mmdc.RenderAsync(request, theme, ct);
+            return await _mmdc.RenderAsync(request, theme, ct, scale);
         if (_mermaid is not null)
-            return await _mermaid.RenderAsync(request, theme, ct);
+            return await _mermaid.RenderAsync(request, theme, ct, scale);
 
         return DiagramResult.Fail(request.Key,
             "Mermaid rendering is disabled in --best-effort mode (and no local 'mmdc' was found). " +

@@ -35,7 +35,7 @@ internal sealed class D2Renderer
         }
     }
 
-    public async Task<DiagramResult> RenderAsync(DiagramRequest request, DiagramTheme theme, CancellationToken ct)
+    public async Task<DiagramResult> RenderAsync(DiagramRequest request, DiagramTheme theme, CancellationToken ct, double renderScale = 1.0)
     {
         try
         {
@@ -43,7 +43,7 @@ internal sealed class D2Renderer
             if (string.IsNullOrWhiteSpace(svg))
                 return DiagramResult.Fail(request.Key, "d2 produced no output");
 
-            var png = Rasterizer.SvgToPng(svg, out var width, out var height);
+            var png = Rasterizer.SvgToPng(svg, out var width, out var height, 1.5f * (float)renderScale);
             return new DiagramResult(request.Key, DiagramStatus.Ready, png, svg, width, height, null);
         }
         catch (D2NotFoundException)

@@ -38,6 +38,14 @@ public interface IDiagramRenderer : IAsyncDisposable
     /// light/dark palette. Safe to call repeatedly with the same key.
     /// </summary>
     Task<DiagramResult> RenderAsync(DiagramRequest request, DiagramTheme theme, CancellationToken ct = default);
+
+    /// <summary>
+    /// Renders at a higher pixel density — roughly <paramref name="scale"/>× the normal resolution —
+    /// for a zoomed/detailed view (e.g. the terminal's focused-image zoom). Results are not written to
+    /// the normal cache. The default implementation falls back to the base render.
+    /// </summary>
+    Task<DiagramResult> RenderAtScaleAsync(DiagramRequest request, DiagramTheme theme, double scale, CancellationToken ct = default)
+        => RenderAsync(request, theme, ct);
 }
 
 public enum DiagramTheme

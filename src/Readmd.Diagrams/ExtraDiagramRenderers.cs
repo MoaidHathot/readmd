@@ -13,14 +13,14 @@ internal sealed class GraphvizRenderer
 
     public GraphvizRenderer(string? dotPath = null) => _dotPath = dotPath ?? "dot";
 
-    public async Task<DiagramResult> RenderAsync(DiagramRequest request, DiagramTheme theme, CancellationToken ct)
+    public async Task<DiagramResult> RenderAsync(DiagramRequest request, DiagramTheme theme, CancellationToken ct, double renderScale = 1.0)
     {
         try
         {
             var svg = await RunAsync(request.Source, theme, ct);
             if (string.IsNullOrWhiteSpace(svg))
                 return DiagramResult.Fail(request.Key, "dot produced no output.");
-            var png = Rasterizer.SvgToPng(svg, out var width, out var height);
+            var png = Rasterizer.SvgToPng(svg, out var width, out var height, 1.5f * (float)renderScale);
             return new DiagramResult(request.Key, DiagramStatus.Ready, png, svg, width, height, null);
         }
         catch (ToolNotFoundException)
@@ -66,7 +66,7 @@ internal sealed class PlantUmlRenderer
 
     public PlantUmlRenderer(string? plantUmlPath = null) => _plantUmlPath = plantUmlPath ?? "plantuml";
 
-    public async Task<DiagramResult> RenderAsync(DiagramRequest request, DiagramTheme theme, CancellationToken ct)
+    public async Task<DiagramResult> RenderAsync(DiagramRequest request, DiagramTheme theme, CancellationToken ct, double renderScale = 1.0)
     {
         try
         {
@@ -74,7 +74,7 @@ internal sealed class PlantUmlRenderer
             var svg = await RunAsync(source, ct);
             if (string.IsNullOrWhiteSpace(svg))
                 return DiagramResult.Fail(request.Key, "plantuml produced no output.");
-            var png = Rasterizer.SvgToPng(svg, out var width, out var height);
+            var png = Rasterizer.SvgToPng(svg, out var width, out var height, 1.5f * (float)renderScale);
             return new DiagramResult(request.Key, DiagramStatus.Ready, png, svg, width, height, null);
         }
         catch (ToolNotFoundException)

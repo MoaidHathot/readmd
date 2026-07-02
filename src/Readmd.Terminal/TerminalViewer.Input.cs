@@ -828,6 +828,12 @@ public sealed partial class TerminalViewer
             _focusZoom = 0;
             _focusPanRows = 0;
             _focusPanCols = 0;
+            _focusDragging = false;
+            // Drop any hi-res render from a previously focused diagram.
+            _focusHiResKey = null;
+            _focusHiResResult = null;
+            _focusHiResScale = 1;
+            _focusHiResInFlight = 0;
             _forceHardClear = true;
             _dirty = true;
         }
@@ -867,8 +873,10 @@ public sealed partial class TerminalViewer
             case KeyKind.Up: FocusPan(-2, 0); return;
             case KeyKind.Right: FocusPan(0, 4); return;
             case KeyKind.Left: FocusPan(0, -4); return;
-            case KeyKind.MouseClick: case KeyKind.MouseDrag: case KeyKind.MouseDragEnd:
-            case KeyKind.MouseRightClick: return;   // ignore mouse buttons in the focus view
+            case KeyKind.MouseClick: FocusDragBegin(key.MouseRow, key.MouseCol); return;
+            case KeyKind.MouseDrag: FocusDragTo(key.MouseRow, key.MouseCol); return;
+            case KeyKind.MouseDragEnd: FocusDragTo(key.MouseRow, key.MouseCol); _focusDragging = false; return;
+            case KeyKind.MouseRightClick: return;   // ignore right-click in the focus view
         }
 
         switch (ch)
@@ -904,12 +912,45 @@ public sealed partial class TerminalViewer
         }
     }
 
+    /// <summary>Begins a mouse drag-to-pan in the focus view: records the grab point and current pan.</summary>
+    private void FocusDragBegin(int row, int col)
+    {
+        lock (_stateLock)
+        {
+            _focusDragging = true;
+            _focusDragStartRow = row;
+            _focusDragStartCol = col;
+            _focusDragStartPanRows = _focusPanRows;
+            _focusDragStartPanCols = _focusPanCols;
+        }
+    }
+
+    /// <summary>
+    /// Continues a drag-to-pan: the image follows the cursor like a hand tool (drag down reveals the
+    /// top). Pan is derived from the total offset since the grab so it tracks the cursor exactly.
+    /// </summary>
+    private void FocusDragTo(int row, int col)
+    {
+        if (!_focusDragging) return;
+        lock (_stateLock)
+        {
+            _focusPanRows = _focusDragStartPanRows - (row - _focusDragStartRow);
+            _focusPanCols = _focusDragStartPanCols - (col - _focusDragStartCol);
+            _forceHardClear = true;
+            _dirty = true;
+        }
+    }
+
     private void CloseFocusView()
     {
         lock (_stateLock)
         {
             _focusMode = false;
             _focusKey = null;
+            _focusDragging = false;
+            _focusHiResKey = null;
+            _focusHiResResult = null;
+            _focusHiResInFlight = 0;
             _forceHardClear = true;   // wipe the full-screen image; the document repaints next frame
             _dirty = true;
         }
@@ -938,22 +979,27 @@ public sealed partial class TerminalViewer
 
             if (browser)
             {
-                string body;
-                if (result.Svg is not null)
+                // Prefer a true-vector page so the browser can zoom infinitely without blur:
+                //  - mermaid: re-render the source client-side via mermaid.js;
+                //  - D2/Graphviz/PlantUML/SVG images: inline the SVG;
+                //  - raster images: embed the PNG.
+                string html;
+                DiagramRequest? diagram = null;
+                lock (_stateLock) { _pendingDiagrams.TryGetValue(key, out diagram); }
+                if (diagram is { Kind: DiagramKind.Mermaid })
                 {
-                    // Inline the SVG directly so mermaid's foreignObject HTML labels render — an
-                    // <img>-embedded SVG runs in restricted mode and may drop them.
-                    body = result.Svg;
+                    html = Readmd.Diagrams.MermaidHtml.BuildStandalonePage(diagram.Source, _theme.IsDark);
                 }
                 else
                 {
-                    var b64 = Convert.ToBase64String(result.Png);
-                    body = "<img src=\"data:image/png;base64," + b64 + "\" alt=\"image\">";
+                    string body = result.Svg is not null
+                        ? result.Svg   // inline SVG renders crisply (foreignObject labels included)
+                        : "<img src=\"data:image/png;base64," + Convert.ToBase64String(result.Png) + "\" alt=\"image\">";
+                    html = "<!doctype html><html><head><meta charset=\"utf-8\"><title>readmd image</title>" +
+                        "<style>html,body{margin:0;height:100%}body{display:flex;align-items:center;justify-content:center;background:#fff}" +
+                        "img,svg{max-width:100vw;max-height:100vh;width:auto;height:auto}</style></head><body>" +
+                        body + "</body></html>";
                 }
-                var html = "<!doctype html><html><head><meta charset=\"utf-8\"><title>readmd image</title>" +
-                    "<style>html,body{margin:0;height:100%}body{display:flex;align-items:center;justify-content:center;background:#fff}" +
-                    "img,svg{max-width:100vw;max-height:100vh;width:auto;height:auto}</style></head><body>" +
-                    body + "</body></html>";
                 var htmlPath = Path.Combine(dir, safe + ".html");
                 File.WriteAllText(htmlPath, html);
                 OpenUrl(htmlPath);

@@ -712,10 +712,10 @@ public sealed partial class TerminalViewer
         _screen.HardClear();
         if (_solidBackground) _screen.FillBackground(_theme.Background, _screen.Height, _screen.Width);
 
-        DiagramResult? result = null;
-        if (_focusKey is not null) _diagramResults.TryGetValue(_focusKey, out result);
+        DiagramResult? baseResult = null;
+        if (_focusKey is not null) _diagramResults.TryGetValue(_focusKey, out baseResult);
 
-        if (result is null || result.Status != DiagramStatus.Ready || result.Png is null)
+        if (baseResult is null || baseResult.Status != DiagramStatus.Ready || baseResult.Png is null)
         {
             _screen.MoveTo(0, 0).SetForeground(_theme.Muted).Write("Image not available — press esc to close.");
             DrawFocusHint();
@@ -728,7 +728,12 @@ public sealed partial class TerminalViewer
             return;
         }
 
+        // Use the highest-resolution render we currently have for this diagram; if the display is
+        // still upscaling it, kick off a crisper re-render in the background (mermaid only).
+        var result = FocusSource(_focusKey!, baseResult);
         var scaled = GetFocusScaled(_focusKey!, result);
+        MaybeRequestFocusHiRes(_focusKey!, baseResult, scaled.Width);
+
         int imgRows = Math.Max(1, scaled.Height / _cellHeightPx);
         int imgCols = Math.Max(1, (int)Math.Ceiling(scaled.Width / (double)_cellWidthPx));
 
@@ -746,8 +751,13 @@ public sealed partial class TerminalViewer
         if (imgCols <= viewCols) { minLeft = maxLeft = marginCols; }
         else { minLeft = viewCols - imgCols; maxLeft = 0; }
 
-        int screenTopRow = Math.Clamp(marginRows - _focusPanRows, minTop, maxTop);
-        int screenLeftCol = Math.Clamp(marginCols - _focusPanCols, minLeft, maxLeft);
+        // Clamp the pan to the valid range and persist it, so a big mouse drag (or key pan) can't
+        // push the pan state past the edge and leave a "dead zone" on the way back.
+        _focusPanRows = Math.Clamp(_focusPanRows, marginRows - maxTop, marginRows - minTop);
+        _focusPanCols = Math.Clamp(_focusPanCols, marginCols - maxLeft, marginCols - minLeft);
+
+        int screenTopRow = marginRows - _focusPanRows;
+        int screenLeftCol = marginCols - _focusPanCols;
 
         // Visible crop in image-cell space.
         int srcCellRow = Math.Max(0, -screenTopRow);
@@ -795,10 +805,74 @@ public sealed partial class TerminalViewer
         DrawFocusHint();
     }
 
+    /// <summary>Returns the best-available render for the focused key: the hi-res one when ready, else the base.</summary>
+    private DiagramResult FocusSource(string key, DiagramResult baseResult)
+    {
+        if (_focusHiResKey == key && _focusHiResResult is { Status: DiagramStatus.Ready, Png: not null } hi)
+            return hi;
+        return baseResult;
+    }
+
+    /// <summary>
+    /// When the focused mermaid diagram would be upscaled at the current zoom (mermaid is PNG-only),
+    /// kicks off a crisper re-render at a higher device scale in the background and swaps it in when
+    /// ready. Vector diagrams (SVG) and raster images don't need this — the former re-rasterize
+    /// locally, the latter can't exceed their native resolution.
+    /// </summary>
+    private void MaybeRequestFocusHiRes(string key, DiagramResult baseResult, int displayWidthPx)
+    {
+        if (baseResult.Svg is not null || baseResult.PixelWidth <= 0) return;
+        if (!_pendingDiagrams.TryGetValue(key, out var req) || req.Kind != DiagramKind.Mermaid) return;
+
+        int haveWidth = (_focusHiResKey == key && _focusHiResResult is { PixelWidth: > 0 } hi)
+            ? hi.PixelWidth : baseResult.PixelWidth;
+        if (haveWidth >= displayWidthPx) return;   // already sharp enough for this zoom
+
+        double needed = displayWidthPx / (double)baseResult.PixelWidth;
+        double bucket = NextScaleBucket(needed);
+        if (bucket <= _focusHiResScale || bucket <= _focusHiResInFlight) return; // have/getting this or better
+
+        _focusHiResInFlight = bucket;
+        var theme = _diagramTheme;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var hires = await _diagrams.RenderAtScaleAsync(req, theme, bucket, _lifetimeCts.Token);
+                lock (_stateLock)
+                {
+                    _focusHiResInFlight = 0;
+                    if (hires.Status == DiagramStatus.Ready && hires.Png is not null
+                        && _focusMode && _focusKey == key)
+                    {
+                        _focusHiResKey = key;
+                        _focusHiResResult = hires;
+                        _focusHiResScale = bucket;
+                        _focusScaledKey = "";       // force the scaled cache to rebuild from the hi-res source
+                        _forceHardClear = true;
+                        _dirty = true;
+                    }
+                }
+            }
+            catch { lock (_stateLock) { _focusHiResInFlight = 0; } }
+        });
+    }
+
+    /// <summary>Rounds a required scale up to the next discrete bucket, so we re-render a bounded number of times.</summary>
+    private static double NextScaleBucket(double needed)
+    {
+        foreach (var b in FocusScaleBuckets)
+            if (b >= needed) return b;
+        return FocusScaleBuckets[^1];
+    }
+    private static readonly double[] FocusScaleBuckets = { 1.5, 2, 3, 4, 6, 8 };
+
     /// <summary>Scales the focused image to fit the viewport (contain) times the zoom factor, cached.</summary>
     private SKBitmap GetFocusScaled(string key, DiagramResult result)
     {
-        string ck = $"{key}-{(_theme.IsDark ? "d" : "l")}-{_screen.Width}-{ViewportHeight}-{_cellWidthPx}-{_cellHeightPx}-{_focusZoom}";
+        // Include the source resolution in the key so switching from the base to a hi-res render
+        // (same key/theme/zoom) rebuilds instead of returning the stale, softer bitmap.
+        string ck = $"{key}-{(_theme.IsDark ? "d" : "l")}-{_screen.Width}-{ViewportHeight}-{_cellWidthPx}-{_cellHeightPx}-{_focusZoom}-{result.PixelWidth}x{result.PixelHeight}";
         if (_focusScaledKey == ck && _focusScaled is { IsNull: false }) return _focusScaled;
 
         _focusScaled?.Dispose();
@@ -854,9 +928,10 @@ public sealed partial class TerminalViewer
         {
             string kind = _focusKey is not null ? FocusLabel(_focusKey) : "image";
             string zoom = _focusZoom == 0 ? "fit" : $"+{_focusZoom}";
-            left = $" Focus {kind}  [{zoom}]";
+            string sharpening = _focusHiResInFlight > 0 ? "  sharpening…" : "";
+            left = $" Focus {kind}  [{zoom}]{sharpening}";
         }
-        string help = " +/-·wheel zoom  hjkl/arrows pan  0 reset  o app  b browser  esc close ";
+        string help = " +/-·wheel zoom  drag·hjkl pan  0 reset  o app  b browser  esc close ";
 
         int width = _screen.Width;
         var sb = new StringBuilder();

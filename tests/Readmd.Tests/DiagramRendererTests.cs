@@ -175,3 +175,18 @@ public class SvgRasterizerTests
     }
 }
 
+public class MermaidHtmlTests
+{
+    [Fact]
+    public void Builds_a_self_contained_vector_page()
+    {
+        var html = MermaidHtml.BuildStandalonePage("graph TD; A-->B;", dark: true);
+        Assert.StartsWith("<!doctype html>", html);
+        Assert.Contains("mermaid.render", html);      // renders client-side (vector, zoomable)
+        Assert.Contains("graph TD", html);            // the diagram source is embedded (JSON-encoded)
+        // The bundled mermaid.js (~MBs) is inlined so the page is fully self-contained/offline.
+        Assert.True(html.Length > 100_000, $"expected mermaid.js inlined, page was {html.Length} bytes");
+    }
+}
+
+

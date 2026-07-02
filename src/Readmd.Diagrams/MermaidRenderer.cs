@@ -18,15 +18,18 @@ internal sealed class MermaidRenderer : IAsyncDisposable
 
     public string? ProvisionError => _provisionError;
 
-    public async Task<DiagramResult> RenderAsync(DiagramRequest request, DiagramTheme theme, CancellationToken ct)
+    public async Task<DiagramResult> RenderAsync(DiagramRequest request, DiagramTheme theme, CancellationToken ct, double renderScale = 1.0)
     {
         try
         {
             var browser = await EnsureBrowserAsync(ct);
+            // The base render uses a 2× device scale; a higher renderScale produces a crisper PNG for
+            // zoomed viewing (clamped so an extreme zoom can't ask for an enormous screenshot).
+            double deviceScale = Math.Clamp(2.0 * renderScale, 2.0, 8.0);
             var page = await browser.NewPageAsync(new BrowserNewPageOptions
             {
                 ViewportSize = new ViewportSize { Width = 1200, Height = 900 },
-                DeviceScaleFactor = 2,
+                DeviceScaleFactor = (float)deviceScale,
             });
             try
             {

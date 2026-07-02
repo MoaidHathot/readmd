@@ -98,6 +98,18 @@ public sealed partial class TerminalViewer : IAsyncDisposable
     private int _focusPanRows;    // vertical pan (rows); positive reveals lower part of the image
     private int _focusPanCols;    // horizontal pan (cols); positive reveals the right part
 
+    // Mouse drag-to-pan state for the focus view (grab and move the enlarged image).
+    private bool _focusDragging;
+    private int _focusDragStartRow, _focusDragStartCol;
+    private int _focusDragStartPanRows, _focusDragStartPanCols;
+
+    // On-demand high-resolution re-render of the focused diagram (mermaid is PNG-only, so zooming in
+    // must re-render via the browser backend at a higher scale to stay crisp).
+    private string? _focusHiResKey;          // key the hi-res result belongs to
+    private DiagramResult? _focusHiResResult; // higher-resolution render of the focused diagram
+    private double _focusHiResScale;         // scale bucket the hi-res was rendered at (1 = base)
+    private double _focusHiResInFlight;      // scale currently being rendered (0 = none)
+
     // Diagram placement: key -> (startLine, rows). Images share the same result map + draw path.
     private readonly Dictionary<string, DiagramResult> _diagramResults = new();
     private readonly HashSet<string> _diagramRequested = [];
