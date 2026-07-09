@@ -512,6 +512,15 @@ public sealed partial class TerminalViewer
         return -1;
     }
 
+    /// <summary>
+    /// Resolves a "#fragment" link target to a display line. Mirrors the browser: it matches heading
+    /// ids AND explicit HTML anchors (<c>&lt;a id&gt;</c>/<c>&lt;a name&gt;</c>), URL-decodes the
+    /// fragment, and finally falls back to a slug-tolerant compare so GitHub-style author anchors
+    /// (e.g. <c>#1-intro</c>, <c>#a--b</c>) still resolve against Markdig's default heading ids
+    /// (<c>intro</c>, <c>a-b</c>). Returns -1 when nothing matches.
+    /// </summary>
+    private int FindAnchorLine(string rawAnchor) => AnchorResolver.Resolve(_anchors, rawAnchor);
+
     // ---------------- links & navigation ----------------
     private void FollowFirstVisibleLink()
     {
@@ -629,7 +638,7 @@ public sealed partial class TerminalViewer
                 _ = LoadAsync(resolved.AbsolutePath, pushHistory: true).ContinueWith(_ => { _scroll = 0; });
                 break;
             case LinkKind.Anchor when resolved.Anchor is not null:
-                int line = FindHeadingLine(resolved.Anchor);
+                int line = FindAnchorLine(resolved.Anchor);
                 if (line >= 0) ScrollTo(line); else SetStatus("Anchor not found");
                 break;
             default:
@@ -671,6 +680,7 @@ public sealed partial class TerminalViewer
                 var parsed = ParseToLines(_currentPath, markdown);
                 _lines = parsed.Lines;
                 _links = parsed.Links;
+                _anchors = parsed.Anchors;
                 _pendingDiagrams = parsed.Diagrams;
                 _pendingImages = parsed.Images;
                 _pendingImageGroups = parsed.ImageGroups;
@@ -725,6 +735,7 @@ public sealed partial class TerminalViewer
                 var parsed = ParseToLines(_currentPath, markdown);
                 _lines = parsed.Lines;
                 _links = parsed.Links;
+                _anchors = parsed.Anchors;
                 _pendingDiagrams = parsed.Diagrams;
                 _pendingImages = parsed.Images;
                 _pendingImageGroups = parsed.ImageGroups;

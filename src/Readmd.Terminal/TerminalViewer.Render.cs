@@ -160,6 +160,7 @@ public sealed partial class TerminalViewer
                 var parsed = ParseToLines(_currentPath, markdown);
                 _lines = parsed.Lines;
                 _links = parsed.Links;
+                _anchors = parsed.Anchors;
                 _pendingDiagrams = parsed.Diagrams;
                 _pendingImages = parsed.Images;
             }

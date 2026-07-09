@@ -53,6 +53,9 @@ public sealed partial class TerminalViewer : IAsyncDisposable
     private string _currentPath;
     private IReadOnlyList<DisplayLine> _lines = [];
     private IReadOnlyList<TerminalLink> _links = [];
+    // Anchor id -> line index for in-document "#fragment" navigation (heading ids + explicit
+    // HTML <a id>/<a name> anchors). Replaced on every (re)parse alongside _lines.
+    private IReadOnlyDictionary<string, int> _anchors = new Dictionary<string, int>();
     private IReadOnlyList<TocEntry> _toc = [];
     private string _title = "";
 
@@ -176,6 +179,7 @@ public sealed partial class TerminalViewer : IAsyncDisposable
             _currentPath = path;
             _lines = parsed.Lines;
             _links = parsed.Links;
+            _anchors = parsed.Anchors;
             _toc = parsed.Toc;
             _title = parsed.Title;
             _pendingDiagrams = parsed.Diagrams;
@@ -202,6 +206,7 @@ public sealed partial class TerminalViewer : IAsyncDisposable
     private sealed record ParsedDoc(
         IReadOnlyList<DisplayLine> Lines,
         IReadOnlyList<TerminalLink> Links,
+        IReadOnlyDictionary<string, int> Anchors,
         IReadOnlyList<TocEntry> Toc,
         string Title,
         IReadOnlyDictionary<string, DiagramRequest> Diagrams,
@@ -216,7 +221,7 @@ public sealed partial class TerminalViewer : IAsyncDisposable
         var meta = MarkdownRenderer.ExtractMetadata(ast, path);
         var renderer = new MarkdownTerminalRenderer(_theme, _screen.Width - 1);
         var result = renderer.Render(ast, meta.Toc, meta.FrontMatter);
-        return new ParsedDoc(result.Lines, result.Links, meta.Toc, meta.Title, renderer.PendingDiagrams, renderer.PendingImages, renderer.PendingImageGroups);
+        return new ParsedDoc(result.Lines, result.Links, result.Anchors, meta.Toc, meta.Title, renderer.PendingDiagrams, renderer.PendingImages, renderer.PendingImageGroups);
     }
 
     public async ValueTask DisposeAsync()

@@ -19,8 +19,13 @@ public sealed class MarkdownRenderer
     // share a single instance instead of rebuilding it per MarkdownRenderer.
     private static readonly MarkdownPipeline BrowserPipeline = new MarkdownPipelineBuilder()
         .UseYamlFrontMatter()          // strip leading ---\n...\n--- so it doesn't leak as content
+        // GitHub-style heading ids (keep leading numbers, preserve consecutive dashes, keep unicode)
+        // so author-written self-links like "#1-intro" / "#appendix-a--b" resolve. This MUST precede
+        // UseAdvancedExtensions(): that helper registers UseAutoIdentifiers() with Default options, and
+        // UseAutoIdentifiers is a guarded add (it no-ops if already present) — so registering GitHub
+        // first is what makes the options actually take effect.
+        .UseAutoIdentifiers(AutoIdentifierOptions.GitHub)
         .UseAdvancedExtensions()       // tables, footnotes, task lists, alerts, etc.
-        .UseAutoIdentifiers(AutoIdentifierOptions.GitHub) // stable heading ids for TOC + anchors
         .UseEmojiAndSmiley()
         .UseMathematics()              // $...$ / $$...$$ -> KaTeX in browser
         .UseGenericAttributes()

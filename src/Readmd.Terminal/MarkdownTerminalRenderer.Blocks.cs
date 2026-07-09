@@ -443,6 +443,11 @@ public sealed partial class MarkdownTerminalRenderer
     private void RenderHtmlBlock(Markdig.Syntax.HtmlBlock html, int indent)
     {
         var raw = html.Lines.ToString();
+        // An explicit anchor block (e.g. <a id="ev-05-whoami"></a>) usually has no visible text and
+        // returns below, so register its id first, pointing at the next line to be emitted (typically
+        // the heading it precedes) so "#ev-05-whoami" links can scroll here.
+        foreach (var anchorId in ExtractHtmlAnchorIds(raw))
+            RegisterAnchor(anchorId, _lines.Count);
         var text = StripHtmlTags(raw);
         if (string.IsNullOrWhiteSpace(text)) return;
 

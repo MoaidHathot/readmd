@@ -18,18 +18,26 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
 {
     private readonly List<DisplayLine> _lines = [];
     private readonly List<TerminalLink> _links = [];
+    // Anchor id -> index into _lines. Populated from heading ids AND explicit HTML anchors
+    // (<a id>/<a name>/id=) so in-document "#fragment" links resolve the same targets the browser
+    // sees in the DOM. Case-insensitive; first occurrence wins (mirrors getElementById).
+    private readonly Dictionary<string, int> _anchors = new(StringComparer.OrdinalIgnoreCase);
     private int _width = Math.Max(20, width);
 
     public IReadOnlyList<TerminalLink> Links => _links;
 
     private IReadOnlyList<TocEntry> _toc = [];
 
-    public sealed record RenderResult(IReadOnlyList<DisplayLine> Lines, IReadOnlyList<TerminalLink> Links);
+    public sealed record RenderResult(
+        IReadOnlyList<DisplayLine> Lines,
+        IReadOnlyList<TerminalLink> Links,
+        IReadOnlyDictionary<string, int> Anchors);
 
     public RenderResult Render(MarkdownObject document, IReadOnlyList<TocEntry>? toc = null, FrontMatter? frontMatter = null)
     {
         _lines.Clear();
         _links.Clear();
+        _anchors.Clear();
         _toc = toc ?? [];
         RenderFrontMatterHeader(frontMatter);
         if (document is ContainerBlock container)
@@ -38,7 +46,34 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
                 RenderBlock(block, 0);
         }
         TrimTrailingBlank();
-        return new RenderResult(_lines, _links);
+        return new RenderResult(_lines, _links, _anchors);
+    }
+
+    /// <summary>Maps an anchor id to the display line it should scroll to. Empty ids are ignored and
+    /// the first registration of an id wins, matching how a browser resolves duplicate element ids.</summary>
+    private void RegisterAnchor(string? id, int lineIndex)
+    {
+        if (!string.IsNullOrWhiteSpace(id))
+            _anchors.TryAdd(id.Trim(), lineIndex);
+    }
+
+    // Captures the value of an id="" / name="" attribute (double, single, or unquoted) on an HTML
+    // tag, while a negative look-behind for a word char or '-' avoids matching data-id, aria-*, etc.
+    private static readonly System.Text.RegularExpressions.Regex HtmlAnchorIdRegex = new(
+        "(?<![\\w-])(?:id|name)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s\"'>]+))",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>Extracts every id/name anchor value from a raw HTML fragment.</summary>
+    private static IEnumerable<string> ExtractHtmlAnchorIds(string html)
+    {
+        if (string.IsNullOrEmpty(html)) yield break;
+        foreach (System.Text.RegularExpressions.Match m in HtmlAnchorIdRegex.Matches(html))
+        {
+            var value = m.Groups[1].Success ? m.Groups[1].Value
+                : m.Groups[2].Success ? m.Groups[2].Value
+                : m.Groups[3].Value;
+            if (!string.IsNullOrWhiteSpace(value)) yield return value;
+        }
     }
 
     // Renders a compact metadata header (title/subtitle/author·date/tags) from YAML front matter.
@@ -120,6 +155,8 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
         EnsureBlankBefore();
         var id = heading.GetAttributes().Id;
         var titleText = TocExtractor.GetPlainText(heading);
+        // The heading line is emitted next (at _lines.Count), for both the H1 and H2+ paths below.
+        RegisterAnchor(id, _lines.Count);
 
         if (heading.Level == 1)
         {
@@ -391,9 +428,12 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
                 // shown once dimmed in parentheses so the expansion is visible in a terminal.
                 spans.Add(new StyledSpan(abbr.Abbreviation.Label ?? "", color, style | CellStyle.Underline, linkId));
                 break;
-            case Markdig.Syntax.Inlines.HtmlInline:
-                // Raw inline HTML tags are dropped (we render Markdown, not markup). Text between
-                // tags is a LiteralInline and still shows; HTML entities are pre-decoded by Markdig.
+            case Markdig.Syntax.Inlines.HtmlInline html:
+                // Raw inline HTML tags are dropped (we render Markdown, not markup), but an inline
+                // <a id="...">/<a name="..."> is a navigation target: register it so "#id" links
+                // resolve. Text between tags is a LiteralInline and still shows.
+                foreach (var anchorId in ExtractHtmlAnchorIds(html.Tag))
+                    RegisterAnchor(anchorId, _lines.Count);
                 break;
             case ContainerInline c:
                 foreach (var child in c) AppendInline(child, spans, color, style, linkId);
