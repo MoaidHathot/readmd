@@ -96,7 +96,7 @@ root.Subcommands.Add(manCommand);
 
 // `readmd install-pdf` — provision the headless browser used for high-quality PDF export.
 var installPdfCommand = new Command("install-pdf",
-    "Download the headless browser used for high-quality PDF export (one-time, ~150 MB). Requires Node.js on PATH.");
+    "Download the headless browser used for high-quality PDF export (one-time, ~100 MB). Requires Node.js on PATH.");
 installPdfCommand.SetAction(_ =>
 {
     var result = PdfProvisioning.EnsureInstalled(msg => Console.Error.WriteLine("readmd: " + msg));

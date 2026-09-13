@@ -134,6 +134,139 @@ public class PdfProvisioningTests
             Assert.True(result.Readiness is PdfReadiness.NodeMissing or PdfReadiness.DriverMissing,
                 $"expected NodeMissing/DriverMissing without node, got {result.Readiness}");
     }
+
+    // A trimmed-down browsers.json in the shape Playwright ships next to its driver.
+    private const string Manifest = """
+        {
+          "browsers": [
+            { "name": "chromium", "revision": "1228", "installByDefault": true, "browserVersion": "149.0.7827.55" },
+            { "name": "chromium-headless-shell", "revision": "1228", "installByDefault": true, "browserVersion": "149.0.7827.55" },
+            { "name": "chromium-tip-of-tree", "revision": "1432", "installByDefault": false },
+            { "name": "firefox", "revision": "1532", "installByDefault": true },
+            { "name": "ffmpeg", "revision": "1011", "installByDefault": true }
+          ]
+        }
+        """;
+
+    [Fact]
+    public void Manifest_selects_the_headless_shell_build_a_headless_launch_uses()
+    {
+        var build = PdfProvisioning.ParseChromiumBuild(Manifest);
+
+        Assert.NotNull(build);
+        Assert.Equal("chromium-headless-shell", build.Value.Name);
+        // Playwright's registry names the directory <name with '-' as '_'>-<revision>.
+        Assert.Equal(["chromium_headless_shell-1228"], build.Value.DirectoryNames);
+    }
+
+    [Fact]
+    public void Manifest_without_a_headless_shell_falls_back_to_full_chromium()
+    {
+        const string legacy = """{ "browsers": [ { "name": "chromium", "revision": 1000 }, { "name": "webkit", "revision": "1500" } ] }""";
+
+        var build = PdfProvisioning.ParseChromiumBuild(legacy);
+
+        Assert.NotNull(build);
+        Assert.Equal("chromium", build.Value.Name);
+        Assert.Equal(["chromium-1000"], build.Value.DirectoryNames);
+    }
+
+    [Fact]
+    public void Manifest_revision_overrides_add_platform_special_directories()
+    {
+        const string pinned = """
+            { "browsers": [ { "name": "chromium-headless-shell", "revision": "1300",
+                              "revisionOverrides": { "ubuntu20.04-x64": "1290", "mac12-arm64": "1280" } } ] }
+            """;
+
+        var build = PdfProvisioning.ParseChromiumBuild(pinned);
+
+        Assert.NotNull(build);
+        Assert.Equal(
+            ["chromium_headless_shell-1300",
+             "chromium_headless_shell_ubuntu20.04_x64_special-1290",
+             "chromium_headless_shell_mac12_arm64_special-1280"],
+            build.Value.DirectoryNames);
+    }
+
+    [Theory]
+    [InlineData("""{ "browsers": [] }""")]
+    [InlineData("""{ "browsers": [ { "name": "firefox", "revision": "1532" } ] }""")]
+    [InlineData("""{ "browsers": [ { "name": "chromium" } ] }""")]
+    [InlineData("""{ "comment": "no browsers key" }""")]
+    [InlineData("[]")]
+    public void Manifest_without_a_usable_chromium_entry_yields_null(string json)
+    {
+        Assert.Null(PdfProvisioning.ParseChromiumBuild(json));
+    }
+
+    [Fact]
+    public void Cache_detection_requires_the_pinned_revision_with_a_completed_install()
+    {
+        var cache = Directory.CreateTempSubdirectory("readmd-pw-cache-").FullName;
+        try
+        {
+            string[] expected = ["chromium_headless_shell-1228"];
+
+            // Empty cache.
+            Assert.False(PdfProvisioning.IsChromiumInstalledIn(cache, expected));
+
+            // Only builds pinned by OTHER Playwright versions (the situation that produced
+            // "Executable doesn't exist at ...chromium_headless_shell-1228...").
+            Complete(Path.Combine(cache, "chromium-1208"));
+            Complete(Path.Combine(cache, "chromium_headless_shell-1208"));
+            Complete(Path.Combine(cache, "chromium_headless_shell-1234"));
+            Assert.False(PdfProvisioning.IsChromiumInstalledIn(cache, expected));
+
+            // The right revision, but the download never finished unpacking (no marker).
+            Directory.CreateDirectory(Path.Combine(cache, "chromium_headless_shell-1228"));
+            Assert.False(PdfProvisioning.IsChromiumInstalledIn(cache, expected));
+
+            // Completed install of the pinned revision.
+            Complete(Path.Combine(cache, "chromium_headless_shell-1228"));
+            Assert.True(PdfProvisioning.IsChromiumInstalledIn(cache, expected));
+
+            // Any of the accepted directory names is enough (platform "special" pins).
+            Assert.True(PdfProvisioning.IsChromiumInstalledIn(cache,
+                ["chromium_headless_shell_ubuntu20.04_x64_special-1290", "chromium_headless_shell-1228"]));
+        }
+        finally
+        {
+            Directory.Delete(cache, recursive: true);
+        }
+
+        static void Complete(string browserDir)
+        {
+            Directory.CreateDirectory(browserDir);
+            File.WriteAllText(Path.Combine(browserDir, "INSTALLATION_COMPLETE"), "");
+        }
+    }
+
+    [Fact]
+    public void Cache_detection_without_a_manifest_accepts_any_chromium_build()
+    {
+        var cache = Directory.CreateTempSubdirectory("readmd-pw-cache-").FullName;
+        try
+        {
+            Assert.False(PdfProvisioning.IsChromiumInstalledIn(cache, expectedDirectories: null));
+
+            Directory.CreateDirectory(Path.Combine(cache, "chromium_headless_shell-1208"));
+            Assert.True(PdfProvisioning.IsChromiumInstalledIn(cache, expectedDirectories: null));
+        }
+        finally
+        {
+            Directory.Delete(cache, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Cache_detection_handles_a_missing_cache_directory()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), "readmd-pw-cache-" + Guid.NewGuid().ToString("N"));
+
+        Assert.False(PdfProvisioning.IsChromiumInstalledIn(missing, ["chromium_headless_shell-1228"]));
+        Assert.False(PdfProvisioning.IsChromiumInstalledIn(missing, expectedDirectories: null));
+    }
 }
 
 public class SvgRasterizerTests
