@@ -828,6 +828,8 @@ public sealed partial class TerminalViewer
     /// </summary>
     private void YankActiveBlock()
     {
+        // A mark-mode drag selection takes precedence: y completes the copy from the keyboard.
+        if (_selectionMode && _selAnchor is not null) { CopySelection(); return; }
         var info = ActiveBlock();
         if (info is null) { SetStatus("Nothing to copy here"); return; }
         string text = BlockText(info);
@@ -897,6 +899,7 @@ public sealed partial class TerminalViewer
 
     private void FollowFirstVisibleLink()
     {
+        if (_selectionMode && _selAnchor is not null) { CopySelection(); return; }   // Enter copies a mark-mode selection
         if (_activeLinkOrdinal >= 0 && _activeLinkOrdinal < _links.Count) { FollowLink(_links[_activeLinkOrdinal]); return; }
         // A fold placeholder at the top: Enter expands it.
         int top = ActiveLineIndex();
@@ -1315,8 +1318,8 @@ public sealed partial class TerminalViewer
         KeyReader.SetMouseCapture(true);
         if (!_selectionMode) ClearSelection();
         SetStatus(_selectionMode
-            ? "Select mode ON — drag to select, right-click to copy; press m to exit"
-            : "Select mode OFF — mouse wheel scrolls", 4);
+            ? "Mark mode ON — drag to select; y, Enter or right-click copies; m exits"
+            : "Mark mode OFF — mouse wheel scrolls", 4);
         _dirty = true;
     }
 

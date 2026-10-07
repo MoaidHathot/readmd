@@ -863,23 +863,31 @@ public sealed partial class TerminalViewer
         var k = _keyMap;
         string j = k.Label(EditorAction.ScrollDown, "j"), kk = k.Label(EditorAction.ScrollUp, "k");
         string find = k.Label(EditorAction.Search, "/"), toc = k.Label(EditorAction.Toc, "t"), quit = k.Label(EditorAction.Quit, "q");
-        string help = _slideMode ? SlideHelpHint(width)
-            : width >= 120
-            ? $"{j}/{kk}·gg/G move  Ctrl+f/b·d/u page  {find}:search {k.Label(EditorAction.SearchNext, "n")}/N  {toc}:toc  {k.Label(EditorAction.LinkHints, "f")}:links  {k.Label(EditorAction.Yank, "y")}:copy  za:fold  {k.Label(EditorAction.ToggleTheme, "[")}:theme  {k.Label(EditorAction.OpenInBrowser, "o")}:browser  {k.Label(EditorAction.Help, "?")}:help  {quit}:quit "
-            : width >= 80
-                ? $"{j}/{kk} gg/G  Ctrl+f/b page  {find}:find  {toc}:toc  {k.Label(EditorAction.LinkHints, "f")}:links  {k.Label(EditorAction.Help, "?")}:help  {quit}:quit "
-                : $"{j}/{kk} {find}:find {toc}:toc {k.Label(EditorAction.Help, "?")}:help {quit}:quit ";
+        string f = k.Label(EditorAction.LinkHints, "f"), y = k.Label(EditorAction.Yank, "y"), m = k.Label(EditorAction.ToggleSelectionMode, "m");
+        string q = k.Label(EditorAction.Help, "?"), o = k.Label(EditorAction.OpenInBrowser, "o"), n = k.Label(EditorAction.SearchNext, "n");
+        string files = k.Label(EditorAction.QuickOpen, "Ctrl-p"), cmd = k.Label(EditorAction.Command, ":");
+        // Candidate hints, widest first; the first one that fits beside the left text wins, so a
+        // long breadcrumb degrades the hint gracefully instead of hiding it altogether.
+        string[] hints = _slideMode ? [SlideHelpHint(width)] :
+        [
+            $"{j}/{kk} gg/G move  Ctrl+f/b page  {find}:search {n}/N  {toc}:toc  {f}:links  {m}:mark  {y}:copy  za:fold  {files}:files  {cmd}{(cmd == ":" ? " " : ":")}cmd  {o}:browser  {q}:help  {quit}:quit ",
+            $"{j}/{kk}·gg/G move  Ctrl+f/b·d/u page  {find}:search {n}/N  {toc}:toc  {f}:links  {y}:copy  {m}:mark  za:fold  {k.Label(EditorAction.ToggleTheme, "[")}:theme  {o}:browser  {q}:help  {quit}:quit ",
+            $"{j}/{kk} gg/G  Ctrl+f/b page  {find}:find  {toc}:toc  {f}:links  {m}:mark  {q}:help  {quit}:quit ",
+            $"{j}/{kk}  Ctrl+f/b  {find}:find  {toc}:toc  {f}:links  {m}:mark  {q}:help  {quit}:quit ",
+            $"{j}/{kk} {find}:find {toc}:toc {q}:help {quit}:quit ",
+        ];
+        int leftW = TextWidth.Of(left);
+        string help = hints.FirstOrDefault(h => leftW + TextWidth.Of(h) <= width) ?? "";
         var sb = new StringBuilder();
         sb.Append(left);
-        int leftW = TextWidth.Of(left), helpW = TextWidth.Of(help);
+        int helpW = TextWidth.Of(help);
         int padding = width - leftW - helpW;
         if (padding > 0) sb.Append(new string(' ', padding));
-        if (leftW + helpW <= width) sb.Append(help);
+        sb.Append(help);
         var text = TextWidth.TrimToWidth(sb.ToString(), width);
         _screen.Write(text);
         _screen.Reset();
     }
-
     // Heading id → visible row, rebuilt at most once per frame (Draw() resets it): the breadcrumb
     // and the TOC overlay would otherwise scan the whole line list once per heading, every frame.
     private Dictionary<string, int>? _frameHeadingRows;

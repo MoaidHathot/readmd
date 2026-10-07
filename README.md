@@ -168,12 +168,12 @@ Vim-style motions are supported throughout (with count prefixes: `5j`, `12gg`), 
 | `za` / `zc` / `zo` | Fold toggle / close / open the top section or `<details>` | `zM` / `zR` | Fold / unfold everything |
 | `s` | Diagram: toggle image ↔ source | `v` | Focus an image (zoom/pan, `n`/`p` next/prev, `o` app, `b` browser) |
 | `[` | Cycle themes (`themeCycle` in config, else all) | `]` | Toggle solid / transparent background |
-| `o` | Open in browser | `m` | Mark mode (select + copy) |
+| `o` | Open in browser | `m` | Mark mode: drag to select; `y`, `Enter` or right-click copies |
 | `r` | Re-render | `:` | Command line (`:q`, `:e file`, `:123`, `:export out.pdf`, `:set width=100`, `:theme nord`, `:marks`, `:slides`, …) |
 | `T` | TOC sidebar (click an entry to jump) | `e` | Export to HTML/PDF next to the file |
 | `M` + letter / `'` + letter | Set / jump to a bookmark (`''` = back to where you jumped from) | `W` / `Alt+f` | Pause live reload / follow mode (jump to the end on every change) |
 | `Ctrl+S` | Slides on/off (in slides: `n`/`p`/`Space`/arrows move, `N` notes, `5gg` slide 5, `:3` slide 3) | | |
-| `?` | Keybindings overlay | `q` (or `Ctrl+C`) | Quit |
+| `?` | Keybindings overlay (scrolls with `j`/`k` when the terminal is short) | `q` (or `Ctrl+C`) | Quit |
 
 `<details>` blocks start collapsed (like GitHub); fold state survives live reloads. readmd remembers where you were in each file (and your search history) across sessions — `readmd file.md +120` or `+/pattern` overrides that, and `"rememberPosition": false` turns it off.
 

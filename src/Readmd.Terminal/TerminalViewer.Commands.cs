@@ -86,7 +86,7 @@ public sealed partial class TerminalViewer
             case "toc": OpenToc(); return;
             case "noh" or "nohlsearch": ClearSearchAndSelection(); return;
             case "export" or "w" or "write": StartExport(arg); return;
-            case "help" or "h": _helpMode = true; _dirty = true; return;
+            case "help" or "h": _helpMode = true; _helpScroll = 0; _dirty = true; return;
             case "fold" or "foldclose" or "zc": FoldActive(FoldOp.Close); return;
             case "unfold" or "foldopen" or "zo": FoldActive(FoldOp.Open); return;
             case "foldall" or "zm": FoldAll(true); return;

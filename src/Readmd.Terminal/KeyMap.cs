@@ -94,15 +94,18 @@ public sealed class KeyMap
         var sb = new StringBuilder();
         foreach (var p in parts)
         {
-            string s = p;
-            s = s.Replace("ctrl+", "Ctrl-").Replace("alt+", "Alt-").Replace("shift+", "Shift-");
-            s = s switch
+            // Modifiers first ("ctrl+shift+tab"), then the key; named keys get their display form.
+            int keyStart = p.LastIndexOf('+') + 1;
+            if (keyStart >= p.Length) keyStart = Math.Max(0, p.Length - 1);   // "ctrl++" → the plus key
+            string mods = p[..keyStart].Replace("ctrl+", "Ctrl-").Replace("alt+", "Alt-").Replace("shift+", "Shift-");
+            string key = p[keyStart..] switch
             {
                 "space" => "Space", "enter" => "Enter", "esc" => "Esc", "tab" => "Tab", "backspace" => "Bksp",
                 "up" => "↑", "down" => "↓", "left" => "←", "right" => "→", "home" => "Home", "end" => "End",
                 "pageup" => "PgUp", "pagedown" => "PgDn", "delete" => "Del", "insert" => "Ins",
-                _ => s,
+                var other => other,
             };
+            string s = mods + key;
             if (sb.Length > 0 && parts.Length > 1 && (p.Length > 1 || sb.Length > 1 && sb[^1] > 0x7f)) sb.Append(' ');
             sb.Append(s);
         }

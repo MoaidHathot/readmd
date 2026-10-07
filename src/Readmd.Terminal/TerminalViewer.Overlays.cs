@@ -168,139 +168,271 @@ public sealed partial class TerminalViewer
     // =====================================================================================
     //  Help overlay (?)
     // =====================================================================================
-    // Built from the live key map so remapped keys show their actual binding.
+    // Built from the live key map so remapped keys show their actual binding. Every default-bound
+    // action appears here (a test enforces it); the layout adapts to 1–3 columns and scrolls when
+    // the terminal is too short, so nothing is ever silently cut off.
+    private int _helpScroll;
+
     private (string Heading, (string Keys, string Desc)[] Items)[] HelpSections()
     {
         var k = _keyMap;
         string K(EditorAction a, string dflt) => k.Label(a, dflt);
-        string K2(EditorAction a, EditorAction b, string da, string db) => $"{K(a, da)}  {K(b, db)}";
+        // "Ctrl-d  Ctrl-u" → "Ctrl-d/u" when both keys share a modifier: keeps the key column narrow
+        // so two columns fit a 100-column terminal.
+        string K2(EditorAction a, EditorAction b, string da, string db)
+        {
+            string x = K(a, da), y = K(b, db);
+            int dash = x.LastIndexOf('-');
+            if (dash > 0 && dash == y.LastIndexOf('-') && x[..dash] == y[..dash] && x.Length - dash == 2 && y.Length - dash == 2)
+                return $"{x}/{y[^1]}";
+            return $"{x}  {y}";
+        }
         return
         [
             ("MOVE", new[]
             {
                 (K2(EditorAction.ScrollDown, EditorAction.ScrollUp, "j", "k"), "line down / up (count: 5j)"),
-                ("Ctrl-d  Ctrl-u", "half page down / up"),
-                (K2(EditorAction.PageDown, EditorAction.PageUp, "Space", "b"), "page down / up (Ctrl-f / Ctrl-b)"),
+                (K2(EditorAction.HalfPageDown, EditorAction.HalfPageUp, "Ctrl-d", "Ctrl-u"), "half page down / up"),
+                (K2(EditorAction.PageDown, EditorAction.PageUp, "Ctrl-f", "Ctrl-b"), "page down / up (Space, b)"),
                 (K2(EditorAction.GoTop, EditorAction.GoBottom, "gg", "G"), "top / bottom (12gg: line 12)"),
                 (K2(EditorAction.NextHeading, EditorAction.PrevHeading, "]]", "[["), "next / previous heading"),
                 (K2(EditorAction.NextBlock, EditorAction.PrevBlock, "}", "{"), "next / previous block"),
-                ("]c [c  ]i [i", "next / prev code block, image"),
+                (K2(EditorAction.NextCode, EditorAction.PrevCode, "]c", "[c"), "next / previous code block"),
+                (K2(EditorAction.NextImage, EditorAction.PrevImage, "]i", "[i"), "next / previous image"),
             }),
-            ("FIND & GO", new[]
+            ("FIND", new[]
             {
-                (K(EditorAction.Search, "/"), "search (Ctrl-r regex, Ctrl-i case, ↑↓ history)"),
+                (K(EditorAction.Search, "/"), "search (Ctrl-r regex · Ctrl-i Aa)"),
                 (K2(EditorAction.SearchNext, EditorAction.SearchPrev, "n", "N"), "next / previous match"),
-                (K(EditorAction.Toc, "t"), "table of contents (type to filter)"),
+                (K(EditorAction.ClearSearch, "Esc"), "clear search / selection"),
+                (K(EditorAction.Toc, "t"), "contents overlay (type to filter)"),
+                (K(EditorAction.TocSidebar, "T"), "TOC sidebar (click to jump)"),
+                (K(EditorAction.ProjectSearch, "Ctrl-g"), "search across all files"),
+            }),
+            ("LINKS", new[]
+            {
                 (K(EditorAction.LinkHints, "f"), "link hints: type a label to open"),
-                (K(EditorAction.CopyLinkUrl, "F"), "link hints: copy the URL"),
-                ($"{K(EditorAction.NextLink, "Tab")}  Enter", "cycle links / open the active one"),
-                ("←  →  Bksp", "back / forward in history"),
+                (K(EditorAction.CopyLinkUrl, "F"), "link hints: copy a link's URL"),
+                (K(EditorAction.NextLink, "Tab"), $"cycle links ({K(EditorAction.PrevLink, "Shift-Tab")} back)"),
+                (K(EditorAction.FollowLink, "Enter"), "open the active / first link"),
+                (K2(EditorAction.Back, EditorAction.Forward, "←", "→"), "back / forward (also Bksp)"),
+                (K(EditorAction.OpenInBrowser, "o"), "open the document in a browser"),
             }),
-            ("BLOCK", new[]
+            ("FILES", new[]
             {
-                (K(EditorAction.Yank, "y"), "copy the top block (code w/o gutter, diagram source)"),
-                (K(EditorAction.YankAll, "Y"), "copy the whole document source"),
-                ("za  zc  zo", "fold toggle / close / open the top section"),
-                ("zM  zR", "fold / unfold all sections"),
-                (K(EditorAction.ToggleDiagramSource, "s"), "diagram: toggle image ↔ source"),
-                (K(EditorAction.ViewImage, "v"), "focus image (zoom/pan · n/p next · o app · b browser)"),
+                (K(EditorAction.QuickOpen, "Ctrl-p"), "quick-open a file (fuzzy)"),
+                (K2(EditorAction.NextFile, EditorAction.PrevFile, "]f", "[f"), "next / previous file"),
+                ($"{K(EditorAction.Bookmark, "M")}a  {K(EditorAction.GoBookmark, "'")}a", "set / jump to bookmark a ('')"),
+                (K(EditorAction.Export, "e"), "export to HTML / PDF"),
+                (K(EditorAction.ToggleWatch, "W"), "pause / resume live reload"),
+                (K(EditorAction.Follow, "Alt-f"), "follow mode (tail the file)"),
+                (K(EditorAction.Rerender, "r"), "re-render from disk"),
             }),
-            ("VIEW & MORE", new[]
+            ("TOP BLOCK", new[]
             {
-                (K2(EditorAction.ToggleTheme, EditorAction.ToggleBackground, "[", "]"), "cycle theme / toggle solid background"),
-                ("+  -  Ctrl-0", "zoom diagrams in / out / reset (also Ctrl-wheel)"),
-                (K(EditorAction.ToggleSelectionMode, "m"), "mark mode (drag = select, right-click = copy)"),
-                (K2(EditorAction.OpenInBrowser, EditorAction.Export, "o", "e"), "open in browser / export html·pdf"),
-                (K2(EditorAction.Rerender, EditorAction.Command, "r", ":"), "re-render / command line"),
-                (K(EditorAction.Slides, "Ctrl-s"), _slideMode ? "leave slides (n/p move · N notes · 5gg: slide 5)" : "slides: present --- separated sections"),
-                ($"{K(EditorAction.Help, "?")}  {K(EditorAction.Quit, "q")}", "this help / quit"),
+                (K(EditorAction.Yank, "y"), "copy it: code, diagram, table"),
+                (K(EditorAction.YankAll, "Y"), "copy the whole document"),
+                ($"{K(EditorAction.FoldToggle, "za")}  {K(EditorAction.FoldClose, "zc")}  {K(EditorAction.FoldOpen, "zo")}", "fold toggle / close / open"),
+                (K2(EditorAction.FoldAll, EditorAction.UnfoldAll, "zM", "zR"), "fold / unfold everything"),
+                (K(EditorAction.ToggleDiagramSource, "s"), "diagram: image ↔ source"),
+                (K(EditorAction.ViewImage, "v"), "focus image (zoom, pan, n/p)"),
+                ($"{K(EditorAction.ZoomIn, "+")} {K(EditorAction.ZoomOut, "-")} {K(EditorAction.ZoomReset, "Ctrl-0")}", "zoom diagrams (Ctrl-wheel)"),
+            }),
+            ("VIEW", new[]
+            {
+                (K2(EditorAction.ToggleTheme, EditorAction.ToggleBackground, "[", "]"), "cycle theme / solid background"),
+                (K(EditorAction.ToggleSelectionMode, "m"), "mark mode: drag selects, y copies"),
+                (K(EditorAction.Command, ":"), "command line (Tab completes)"),
+                (K(EditorAction.Slides, "Ctrl-s"), _slideMode ? "leave slides (n/p, N notes, 5gg)" : "slides: present --- sections"),
+                (K2(EditorAction.Help, EditorAction.Quit, "?", "q"), "this help / quit"),
+            }),
+            ("MOUSE", new[]
+            {
+                ("wheel", "scroll (Ctrl-wheel: zoom)"),
+                ("click", "open link (Ctrl: no confirm)"),
+                ("drag", "select text (in mark mode)"),
+                ("right-click", "copy the selection"),
+                ("click TOC", "jump to heading (sidebar, t)"),
             }),
         ];
     }
+
+    private enum HelpRowKind { Heading, Item, Blank }
+    private readonly record struct HelpRow(HelpRowKind Kind, string Keys, string Desc, int CapW);
+
+    /// <summary>Flattens a section into rows (heading, items, trailing blank) with the section's key-column width.</summary>
+    private static List<HelpRow> HelpRowsOf((string Heading, (string Keys, string Desc)[] Items) s)
+    {
+        int capW = s.Items.Max(it => TextWidth.Of(it.Keys) + 2);
+        var rows = new List<HelpRow> { new(HelpRowKind.Heading, s.Heading, "", capW) };
+        foreach (var (keys, desc) in s.Items) rows.Add(new HelpRow(HelpRowKind.Item, keys, desc, capW));
+        rows.Add(new HelpRow(HelpRowKind.Blank, "", "", capW));
+        return rows;
+    }
+
+    private static int HelpSectionWidth((string Heading, (string Keys, string Desc)[] Items) s)
+    {
+        int capW = s.Items.Max(it => TextWidth.Of(it.Keys) + 2);
+        int widest = s.Items.Max(it => capW + 3 + TextWidth.Of(it.Desc));
+        return Math.Max(TextWidth.Of(LetterSpace(s.Heading)), widest);
+    }
+
+    /// <summary>
+    /// Lays the sections out in the most columns that fit the width (balanced by row count, each
+    /// column as wide as its widest section). Returns the columns, their widths and the row count.
+    /// </summary>
+    private (List<List<HelpRow>> Columns, List<int> Widths, int Rows) HelpLayout(int availableWidth)
+    {
+        var sections = HelpSections();
+        const int gap = 3;
+        for (int cols = 3; cols >= 1; cols--)
+        {
+            int totalRows = sections.Sum(s => s.Items.Length + 2);
+            int target = (int)Math.Ceiling(totalRows / (double)cols);
+            var columns = new List<List<(string Heading, (string Keys, string Desc)[] Items)>> { new() };
+            int rowsInCurrent = 0;
+            foreach (var s in sections)
+            {
+                int rows = s.Items.Length + 2;
+                if (rowsInCurrent > 0 && rowsInCurrent + rows > target + 1 && columns.Count < cols) { columns.Add(new()); rowsInCurrent = 0; }
+                columns[^1].Add(s);
+                rowsInCurrent += rows;
+            }
+            var widths = columns.Select(col => col.Max(HelpSectionWidth)).ToList();
+            int total = widths.Sum() + gap * (widths.Count - 1);
+            if (total <= availableWidth || cols == 1)
+            {
+                if (cols == 1) widths[0] = Math.Min(widths[0], availableWidth);
+                var rowLists = columns.Select(col => col.SelectMany(HelpRowsOf).ToList()).ToList();
+                foreach (var rl in rowLists) if (rl.Count > 0 && rl[^1].Kind == HelpRowKind.Blank) rl.RemoveAt(rl.Count - 1);
+                return (rowLists, widths, rowLists.Max(r => r.Count));
+            }
+        }
+        throw new InvalidOperationException("unreachable");
+    }
+
+    private int _helpBodyRows = 1, _helpTotalRows = 1;
 
     private void DrawHelpOverlay()
     {
         var p = Palette();
         DrawScrim(p);
-        var sections = HelpSections();
+        const int padX = 1, gap = 3;
+        int maxContent = _screen.Width - 4 - 2 - 2 * padX;      // card margins, borders, padding
+        var (columns, widths, totalRows) = HelpLayout(maxContent);
+        int contentW = widths.Sum() + gap * (widths.Count - 1);
 
-        int SectionWidth((string Heading, (string Keys, string Desc)[] Items) s)
-        {
-            int capW = s.Items.Max(it => TextWidth.Of(it.Keys) + 2);
-            int rows = s.Items.Max(it => capW + 3 + TextWidth.Of(it.Desc));
-            return Math.Max(LetterSpace(s.Heading).Length, rows);
-        }
-        int half = (sections.Length + 1) / 2;
-        var left = sections.Take(half).ToArray();
-        var right = sections.Skip(half).ToArray();
-
-        int ColW((string Heading, (string Keys, string Desc)[] Items)[] col) =>
-            col.Length == 0 ? 0 : col.Max(SectionWidth);
-        int colW = Math.Max(Math.Max(ColW(left), ColW(right)), 22);
-
-        int padX = 2, gap = 4;
-        // Two columns when they fit, else one.
-        bool twoCols = padX + colW + gap + colW + padX + 2 <= _screen.Width - 4;
-        if (!twoCols) { left = sections; right = []; colW = Math.Min(colW, _screen.Width - 8); }
-        int contentW = twoCols ? padX + colW + gap + colW + padX : padX + colW + padX;
-
-        int RowsFor((string Heading, (string Keys, string Desc)[] Items)[] col) =>
-            col.Sum(s => 1 + s.Items.Length + 1) - (col.Length > 0 ? 1 : 0);
-        int bodyRows = Math.Max(RowsFor(left), RowsFor(right));
-
-        int cardW = Math.Min(_screen.Width - 4, contentW + 2);
-        int cardH = Math.Min(_screen.Height - 2, bodyRows + 9);
+        int cardW = Math.Min(_screen.Width - 4, contentW + 2 * padX + 2);
+        int cardH = Math.Min(_screen.Height - 2, totalRows + 8);
         int boxTop = Math.Max(0, (_screen.Height - cardH) / 2);
         int boxLeft = Math.Max(0, (_screen.Width - cardW) / 2);
 
         var (cTop, cLeft, cW, cH) = DrawCard(p, boxTop, boxLeft, cardW, cardH);
-        DrawHeaderFooter(p, cTop, cLeft, cW, cH, "Keybindings", "esc  or  any key to close");
+        int bodyTop = cTop + 2;
+        int bodyHeight = Math.Max(1, (cTop + cH - 2) - bodyTop);
+        _helpBodyRows = bodyHeight;
+        _helpTotalRows = totalRows;
+        int maxScroll = Math.Max(0, totalRows - bodyHeight);
+        _helpScroll = Math.Clamp(_helpScroll, 0, maxScroll);
+        bool scrolls = maxScroll > 0;
 
-        int bodyTop = cTop + 3;
-        int bodyLeft = cLeft + padX;
-        int bodyHeight = (cTop + cH - 2) - bodyTop - 1;
+        string footer;
+        if (scrolls)
+        {
+            string up = _helpScroll > 0 ? "▴ " : "  ", down = _helpScroll < maxScroll ? " ▾" : "  ";
+            string pos = $"{_helpScroll + 1}–{Math.Min(totalRows, _helpScroll + bodyHeight)}/{totalRows}";
+            footer = $"{up}j/k scroll · Space/b page · esc closes   {pos}{down}";
+            if (TextWidth.Of(footer) > cW) footer = $"{up}j/k · Space/b · esc   {pos}{down}";   // narrow card
+        }
+        else footer = "esc  or  any key to close";
+        if (Glyphs.Ascii) footer = footer.Replace("▴", "^").Replace("▾", "v").Replace("·", "-");
+        DrawHeaderFooter(p, cTop, cLeft, cW, cH, "Keybindings" + (_slideMode ? "  ·  slides" : ""), footer);
 
-        RenderHelpColumn(p, left, bodyTop, bodyLeft, colW, bodyHeight);
-        if (twoCols) RenderHelpColumn(p, right, bodyTop, bodyLeft + colW + gap, colW, bodyHeight);
+        int left = cLeft + padX;
+        for (int i = 0; i < columns.Count; i++)
+        {
+            RenderHelpColumn(p, columns[i], bodyTop, left, widths[i], bodyHeight, _helpScroll);
+            left += widths[i] + gap;
+        }
+        // Fill the gaps between columns so the panel background is continuous.
         _screen.Reset();
     }
 
-    private void RenderHelpColumn(OverlayPalette p,
-        (string Heading, (string Keys, string Desc)[] Items)[] col,
-        int top, int left, int width, int maxRows)
+    private void RenderHelpColumn(OverlayPalette p, List<HelpRow> rows, int top, int left, int width, int height, int scroll)
     {
-        int row = top, endRow = top + maxRows;
-        foreach (var (heading, items) in col)
+        for (int i = 0; i < height; i++)
         {
-            if (row >= endRow) break;
-            _screen.MoveTo(row, left).SetBackground(p.Panel).SetForeground(p.Accent).SetStyle(CellStyle.Bold);
-            string h = TextWidth.TrimToWidth(LetterSpace(heading), width);
-            _screen.Write(h);
-            _screen.SetStyle(CellStyle.None).SetBackground(p.Panel);
-            if (h.Length < width) _screen.Write(new string(' ', width - h.Length));
-            row++;
-
-            int capW = items.Max(it => TextWidth.Of(it.Keys) + 2);
-            foreach (var (keys, desc) in items)
+            int screenRow = top + i, idx = scroll + i;
+            _screen.MoveTo(screenRow, left).SetBackground(p.Panel);
+            if (idx < 0 || idx >= rows.Count) { _screen.Write(new string(' ', width)); continue; }
+            var row = rows[idx];
+            switch (row.Kind)
             {
-                if (row >= endRow) break;
-                _screen.MoveTo(row, left).SetBackground(p.Panel);
-                int used = WriteKey(p, keys);
-                _screen.SetBackground(p.Panel).Write(new string(' ', Math.Max(0, capW - used)));
-                _screen.Write("   ");
-                int descRoom = width - capW - 3;
-                string d = TextWidth.TrimToWidth(desc, Math.Max(1, descRoom));
-                _screen.SetForeground(p.Muted).Write(d);
-                int written = capW + 3 + TextWidth.Of(d);
-                if (written < width) _screen.SetBackground(p.Panel).Write(new string(' ', width - written));
-                row++;
+                case HelpRowKind.Heading:
+                {
+                    _screen.SetForeground(p.Accent).SetStyle(CellStyle.Bold);
+                    string h = TextWidth.TrimToWidth(LetterSpace(row.Keys), width);
+                    _screen.Write(h);
+                    _screen.SetStyle(CellStyle.None).SetBackground(p.Panel);
+                    int hw = TextWidth.Of(h);
+                    if (hw < width) _screen.Write(new string(' ', width - hw));
+                    break;
+                }
+                case HelpRowKind.Item:
+                {
+                    int used = WriteKey(p, row.Keys);
+                    _screen.SetBackground(p.Panel).Write(new string(' ', Math.Max(0, row.CapW - used)));
+                    _screen.Write("   ");
+                    int descRoom = width - row.CapW - 3;
+                    string d = TextWidth.TrimToWidth(row.Desc, Math.Max(1, descRoom));
+                    _screen.SetForeground(p.Muted).Write(d);
+                    int written = row.CapW + 3 + TextWidth.Of(d);
+                    if (written < width) _screen.SetBackground(p.Panel).Write(new string(' ', width - written));
+                    break;
+                }
+                default:
+                    _screen.Write(new string(' ', width));
+                    break;
             }
-            if (row < endRow) { _screen.MoveTo(row, left).SetBackground(p.Panel).Write(new string(' ', width)); row++; }
         }
-        for (; row < endRow; row++)
-            _screen.MoveTo(row, left).SetBackground(p.Panel).Write(new string(' ', width));
     }
 
+    /// <summary>Keys while the help overlay is open: scroll it, or close it.</summary>
+    private void HandleHelpKey(KeyEvent key)
+    {
+        int page = Math.Max(1, _helpBodyRows - 1);
+        int maxScroll = Math.Max(0, _helpTotalRows - _helpBodyRows);
+        void Scroll(int delta) { _helpScroll = Math.Clamp(_helpScroll + delta, 0, maxScroll); _dirty = true; }
+        switch (key.Kind)
+        {
+            case KeyKind.Down or KeyKind.MouseScrollDown: Scroll(key.Kind == KeyKind.Down ? 1 : 3); return;
+            case KeyKind.Up or KeyKind.MouseScrollUp: Scroll(key.Kind == KeyKind.Up ? -1 : -3); return;
+            case KeyKind.PageDown: Scroll(page); return;
+            case KeyKind.PageUp: Scroll(-page); return;
+            case KeyKind.Home: Scroll(-maxScroll); return;
+            case KeyKind.End: Scroll(maxScroll); return;
+            case KeyKind.MouseDrag or KeyKind.MouseDragEnd or KeyKind.MouseRightClick or KeyKind.MouseMiddleClick: return;
+            case KeyKind.Char when !key.Alt:
+                switch (key.Char)
+                {
+                    case 'j' when !key.Ctrl: Scroll(1); return;
+                    case 'k' when !key.Ctrl: Scroll(-1); return;
+                    case ' ' when !key.Ctrl: Scroll(page); return;
+                    case 'b' when !key.Ctrl: Scroll(-page); return;
+                    case 'd' when key.Ctrl: Scroll(page / 2); return;
+                    case 'u' when key.Ctrl: Scroll(-page / 2); return;
+                    case 'f' when key.Ctrl: Scroll(page); return;
+                    case 'b' when key.Ctrl: Scroll(-page); return;
+                    case 'g': Scroll(-maxScroll); return;
+                    case 'G': Scroll(maxScroll); return;
+                }
+                break;
+        }
+        // Esc, q, ?, Enter, a click — or any other key — dismisses the overlay.
+        _helpMode = false;
+        _helpScroll = 0;
+        _dirty = true;
+    }
     private static string LetterSpace(string s)
     {
         if (s.Length <= 1) return s;
@@ -516,6 +648,12 @@ public sealed partial class TerminalViewer
             else foreach (var ch in token) HandleKeyEvent(new KeyEvent(KeyKind.Char, ch));
         }
     }
+
+    /// <summary>Headless: the help overlay's content as "keys<TAB>description" lines (every section, no layout).</summary>
+    internal IEnumerable<string> HelpEntries() =>
+        HelpSections().SelectMany(s => s.Items.Select(it => it.Keys + "\t" + it.Desc));
+
+    internal bool InHelpMode => _helpMode;
 
     /// <summary>Headless: simulates a terminal resize followed by the debounced reflow.</summary>
     internal void Resize(int width, int height)

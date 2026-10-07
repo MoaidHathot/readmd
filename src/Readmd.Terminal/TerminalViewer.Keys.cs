@@ -46,13 +46,7 @@ public sealed partial class TerminalViewer
             }
             return;
         }
-        if (_helpMode)
-        {
-            // Any key dismisses the help overlay.
-            _helpMode = false;
-            _dirty = true;
-            return;
-        }
+        if (_helpMode) { HandleHelpKey(key); return; }
 
         // Mouse first (never part of a chord).
         switch (key.Kind)
@@ -182,7 +176,7 @@ public sealed partial class TerminalViewer
             case EditorAction.Rerender: Rerender(); return;
             case EditorAction.ToggleTheme: ToggleTheme(); return;
             case EditorAction.ToggleBackground: ToggleSolidBackground(); return;
-            case EditorAction.Help: _helpMode = true; _dirty = true; return;
+            case EditorAction.Help: _helpMode = true; _helpScroll = 0; _dirty = true; return;
             case EditorAction.NextHeading: MoveToBlock(+n, l => l.HeadingLevel > 0); return;
             case EditorAction.PrevHeading: MoveToBlock(-n, l => l.HeadingLevel > 0); return;
             case EditorAction.NextBlock: MoveToBlock(+n, _ => true); return;
