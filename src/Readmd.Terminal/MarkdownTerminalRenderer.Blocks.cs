@@ -873,17 +873,6 @@ public sealed partial class MarkdownTerminalRenderer
     /// The raw text between a container's opening and closing fence lines (e.g. the body of an
     /// Azure DevOps <c>::: mermaid</c> block), sliced from the original document.
     /// </summary>
-    private string ContainerBody(Markdig.Syntax.ContainerBlock container)
-    {
-        if (_source is null) return "";
-        var span = container.Span;
-        if (span.Start < 0 || span.End < span.Start || span.End >= _source.Length + 1) return "";
-        int end = Math.Min(_source.Length, span.End + 1);
-        var text = _source[span.Start..end];
-        var lines = text.Replace("\r\n", "\n").Split('\n').ToList();
-        if (lines.Count > 0 && lines[0].TrimStart().StartsWith(":::")) lines.RemoveAt(0);
-        while (lines.Count > 0 && lines[^1].Trim().Length == 0) lines.RemoveAt(lines.Count - 1);
-        if (lines.Count > 0 && lines[^1].TrimStart().StartsWith(":::")) lines.RemoveAt(lines.Count - 1);
-        return string.Join("\n", lines);
-    }
+    private string ContainerBody(Markdig.Syntax.ContainerBlock container) =>
+        _source is null ? "" : DiagramExtractor.ContainerBody(_source, container);
 }

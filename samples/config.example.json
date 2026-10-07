@@ -1,0 +1,82 @@
+{
+  "$schema": "https://raw.githubusercontent.com/MoaidHathot/readmd/main/schema/readmd.schema.json",
+
+  // A complete example of readmd's configuration. Copy it to ~/.config/readmd/config.json
+  // (%APPDATA%\readmd\config.json on Windows) or save it as .readmd.json next to a project.
+  // Check it any time with:  readmd config validate samples/config.example.json
+
+  // ---- appearance -------------------------------------------------------------------------
+  "theme": "ink",                           // built-in name, "auto", or a custom theme below
+  "themeCycle": ["ink", "dark", "light", "solarized-light"],   // what the [ key cycles through
+  "background": "terminal",                 // "solid" paints the theme background
+  "maxWidth": 110,                          // centre content at 110 columns (0 = full width)
+  "lineNumbers": true,
+  "tabSize": 4,
+  "smartPunctuation": false,
+  "graphics": "auto",                       // sixel | kitty | iterm2 | half-block | none
+  "color": "auto",                          // always | 256 | 16 | never
+  "hyperlinks": true,
+  "ascii": false,
+  "ambiguousWide": false,
+
+  // ---- behaviour --------------------------------------------------------------------------
+  "wheelLines": 3,
+  "confirmExternalLinks": true,
+  "rememberPosition": true,
+  "scrollbar": true,
+  "watch": true,
+  "network": true,                          // false = offline everywhere
+
+  // ---- diagram tools ----------------------------------------------------------------------
+  "krokiUrl": "https://kroki.io",           // self-host for privacy: diagram text is sent here
+  "krokiFallback": true,                    // false = local tools only
+  // "d2Path": "/usr/local/bin/d2",
+  // "mermaidCliPath": "mmdc",
+  // "graphvizPath": "dot",
+  // "plantUmlPath": "plantuml",
+
+  // ---- custom themes ----------------------------------------------------------------------
+  "themes": {
+    // Inherit everything from a built-in and change a few roles.
+    "ink": {
+      "base": "tokyo-night",
+      "link": "#7dcfff",
+      "accent": "#ff9e64",
+      "h1": "#bb9af7",
+      "codeTheme": "one-dark"
+    },
+    // A light theme built from scratch: unset colours fall back to the light default palette.
+    "paper": {
+      "dark": false,
+      "text": "#222222",
+      "muted": "#6b6b6b",
+      "background": "#fbf7ef",
+      "backgroundElevated": "#f1ebdf",
+      "codeBackground": "#f1ebdf",
+      "codeBorder": "#d9cfbd",
+      "rule": "#d9cfbd",
+      "heading": "#2a5db0",
+      "h1": "#7a3e9d",
+      "h2": "#2a5db0",
+      "h3": "#2e7d32",
+      "link": "#1a5fb4",
+      "code": "#9a3412",
+      "accent": "#7a3e9d",
+      "selectionBackground": "#2a5db0",
+      "searchBackground": "#f3dc8a",
+      "codeTheme": "light-plus"
+    }
+  },
+
+  // ---- key bindings -----------------------------------------------------------------------
+  // action -> chord or list of chords; replaces the defaults for that action.
+  "keys": {
+    "quit": ["q", "ctrl+q"],
+    "pageDown": ["space", "<C-f>", "pagedown"],
+    "pageUp": ["b", "<C-b>", "pageup"],
+    "quickOpen": ["ctrl+p", "ctrl+o"],
+    "toggleTheme": "F2",
+    "slides": "F5",
+    "followTail": "alt+f"
+  }
+}

@@ -9,7 +9,13 @@ namespace Readmd.Core;
 /// </summary>
 public static class DiagramExtractor
 {
-    public static IReadOnlyList<DiagramRequest> Extract(MarkdownObject document)
+    /// <summary>
+    /// Finds every diagram in the document: fenced code blocks whose info string names a diagram
+    /// kind, and — when the original <paramref name="source"/> text is supplied — Azure DevOps style
+    /// <c>::: mermaid</c> custom containers, whose body is sliced verbatim from the source (Markdig
+    /// parses the container's content as Markdown, which would mangle the diagram text).
+    /// </summary>
+    public static IReadOnlyList<DiagramRequest> Extract(MarkdownObject document, string? source = null)
     {
         var result = new List<DiagramRequest>();
         foreach (var node in Descendants(document))
@@ -18,12 +24,37 @@ public static class DiagramExtractor
             {
                 var kind = MapKind(fenced.Info);
                 if (kind is null) continue;
-                var source = fenced.Lines.ToString();
-                if (string.IsNullOrWhiteSpace(source)) continue;
-                result.Add(DiagramRequest.Create(kind.Value, source));
+                var text = fenced.Lines.ToString();
+                if (string.IsNullOrWhiteSpace(text)) continue;
+                result.Add(DiagramRequest.Create(kind.Value, text));
+            }
+            else if (source is not null && node is Markdig.Extensions.CustomContainers.CustomContainer container)
+            {
+                var kind = MapKind(container.Info);
+                if (kind is null) continue;
+                var text = ContainerBody(source, container);
+                if (string.IsNullOrWhiteSpace(text)) continue;
+                result.Add(DiagramRequest.Create(kind.Value, text));
             }
         }
         return result;
+    }
+
+    /// <summary>
+    /// The raw text between a container's <c>:::</c> fences, sliced from the original document
+    /// (used for <c>::: mermaid</c> blocks, whose body must not be interpreted as Markdown).
+    /// </summary>
+    public static string ContainerBody(string source, ContainerBlock container)
+    {
+        var span = container.Span;
+        if (span.Start < 0 || span.End < span.Start || span.Start >= source.Length) return "";
+        int end = Math.Min(source.Length, span.End + 1);
+        var text = source[span.Start..end];
+        var lines = text.Replace("\r\n", "\n").Split('\n').ToList();
+        if (lines.Count > 0 && lines[0].TrimStart().StartsWith(":::")) lines.RemoveAt(0);
+        while (lines.Count > 0 && lines[^1].Trim().Length == 0) lines.RemoveAt(lines.Count - 1);
+        if (lines.Count > 0 && lines[^1].TrimStart().StartsWith(":::")) lines.RemoveAt(lines.Count - 1);
+        return string.Join("\n", lines);
     }
 
     private static readonly Dictionary<string, DiagramKind> Kinds = new(StringComparer.OrdinalIgnoreCase)

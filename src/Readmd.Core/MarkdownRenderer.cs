@@ -43,7 +43,7 @@ public sealed class MarkdownRenderer
 
         var frontMatter = toml ?? ExtractFrontMatter(document);
         var toc = TocExtractor.Extract(document);
-        var diagrams = DiagramExtractor.Extract(document);
+        var diagrams = DiagramExtractor.Extract(document, body);
         var title = DeriveTitle(frontMatter, toc, sourcePath);
         var html = RenderHtml(document);
         html = FrontMatterHeader.Prepend(html, frontMatter);
@@ -60,11 +60,11 @@ public sealed class MarkdownRenderer
     /// they parse the document once and never pay for the HTML render they don't display. A front
     /// matter parsed outside Markdig (TOML) can be supplied via <paramref name="frontMatterOverride"/>.
     /// </summary>
-    public static DocumentMetadata ExtractMetadata(Markdig.Syntax.MarkdownDocument document, string sourcePath, FrontMatter? frontMatterOverride = null)
+    public static DocumentMetadata ExtractMetadata(Markdig.Syntax.MarkdownDocument document, string sourcePath, FrontMatter? frontMatterOverride = null, string? source = null)
     {
         var frontMatter = frontMatterOverride ?? ExtractFrontMatter(document);
         var toc = TocExtractor.Extract(document);
-        var diagrams = DiagramExtractor.Extract(document);
+        var diagrams = DiagramExtractor.Extract(document, source);
         var title = DeriveTitle(frontMatter, toc, sourcePath);
         return new DocumentMetadata(title, toc, diagrams, frontMatter);
     }

@@ -104,6 +104,18 @@ Something not rendering as expected? `readmd doctor` reports what the terminal
 answered (Sixel/kitty graphics, background colour, synchronized output), which
 diagram backend each kind will use and where every config and state file lives.
 
+### Samples
+
+The `samples/` folder is a guided tour; each file exercises a feature set and the test suite keeps them rendering:
+
+| File | Shows |
+| --- | --- |
+| `samples/demo.md` | Everything in one document: formatting, alerts, code with fence options (`title=`, `{2,5-6}`, `nonums`), tables, task lists, mermaid/D2/Graphviz/PlantUML, `::: mermaid`, math (inline, `$$`, ```` ```math ````), images, HTML, footnotes, colour chips |
+| `samples/diagrams.md` | The diagram zoo: 16 Kroki-rendered kinds (ditaa, svgbob, pikchr, nomnoml, erd, dbml, WaveDrom, bytefield, Vega-Lite, blockdiag family, C4…), TOML front matter, and a deliberately broken diagram to show inline errors |
+| `samples/slides.md` | Presentation mode: `readmd samples/slides.md --slides` — separators, `<!-- pause -->`, speaker notes |
+| `samples/wiki/` | A linked mini-wiki: `readmd samples/wiki` for directory mode, then `Ctrl+P`, `Ctrl+G`, `]f`, anchors and the link sandbox |
+| `samples/config.example.json` | Every config key, two custom themes (one inheriting from `tokyo-night`), key remaps — `readmd config validate samples/config.example.json` |
+
 ### Export & piping
 
 readmd is pipeline-friendly. When stdout is redirected (or you read from stdin),

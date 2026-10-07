@@ -36,6 +36,9 @@ keep their term and are underlined.
 *[HTML]: HyperText Markup Language
 *[CSS]: Cascading Style Sheets
 
+Colour values in inline code get a swatch: the brand colour is `#ff8800`, links use `#58a6ff`,
+and `rgb(80, 200, 120)` / `hsl(280, 60%, 60%)` work as well.
+
 Two trailing spaces force a hard line break —
 this text starts on a brand-new line.
 
@@ -69,6 +72,25 @@ All five alert kinds are recognized and styled with their own icon, title, and c
 Inline code like `dotnet build`, `Get-ChildItem`, and `npm run dev` renders distinctly. Below are
 full snippets across several languages so you can see the syntax highlighting and the `bat`-style
 gutter with line numbers.
+
+#### Fence options
+
+A fence's info string can carry options: a `title="…"` header, highlighted lines (`{1,3-5}` or
+`hl_lines="2"`), and `nonums` / `showLineNumbers` to override the line-number gutter per block.
+
+```csharp title="Program.cs" {2,5-6}
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddSingleton<Clock>();          // highlighted
+var app = builder.Build();
+
+app.MapGet("/", () => "Hello");                   // highlighted
+app.MapGet("/time", (Clock c) => c.Now);          // highlighted
+app.Run();
+```
+
+```text nonums
+A plain block with the gutter switched off: handy for ASCII art and command output.
+```
 
 #### C#
 
@@ -407,6 +429,15 @@ graph TD
   D --> B
 ```
 
+Azure DevOps wikis write mermaid as a `::: mermaid` container; that renders the same way:
+
+::: mermaid
+pie title Where the time goes
+  "Rendering" : 45
+  "Diagrams" : 30
+  "Coffee" : 25
+:::
+
 ### D2
 
 ```d2
@@ -440,6 +471,12 @@ Renderer --> User : view
 ## Math
 
 The quadratic formula is $x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}$.
+
+GitHub-style ```` ```math ```` fences are display math too:
+
+```math
+\sum_{k=1}^{n} k = \frac{n(n+1)}{2}
+```
 
 $$
 \int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}
