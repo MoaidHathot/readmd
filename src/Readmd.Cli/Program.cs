@@ -7,9 +7,10 @@ using Readmd.Diagrams;
 using Readmd.Terminal;
 using Readmd.Web;
 
-var fileArgument = new Argument<string>("file")
+var fileArgument = new Argument<string[]>("file")
 {
-    Description = "Path to the Markdown file to view.",
+    Description = "Markdown file(s) to view: paths, globs (docs/**/*.md), a directory (opens a file picker), '-' for stdin, an https:// URL, or gh:owner/repo[@ref][/path].",
+    Arity = ArgumentArity.ZeroOrMore,
 };
 
 var browserOption = new Option<bool>("--browser", ["-b"])
@@ -167,7 +168,7 @@ root.Subcommands.Add(installPdfCommand);
 root.SetAction(async (parse, ct) =>
 {
     Timing.Mark("args parsed");
-    var file = parse.GetValue(fileArgument)!;
+    var fileArgs = parse.GetValue(fileArgument) ?? [];
     var browser = parse.GetValue(browserOption);
     var port = parse.GetValue(portOption);
     var noOpen = parse.GetValue(noOpenOption);
@@ -185,19 +186,72 @@ root.SetAction(async (parse, ct) =>
     var offlineArg = parse.GetValue(offlineOption);
     var noWatch = parse.GetValue(noWatchOption);
 
-    var fromStdin = file == "-";
+    // Resolve what to open: stdin, remote URL(s), directories (file picker), globs, plain paths.
+    // Offline is decided later (config) but remote fetching needs the network regardless, so a
+    // remote argument with --offline is an error up front.
+    if (fileArgs.Length == 0)
+    {
+        // No argument: a README in the current directory, else directory mode on ".".
+        var cwd = Directory.GetCurrentDirectory();
+        var readme = Directory.EnumerateFiles(cwd).FirstOrDefault(f => Path.GetFileName(f).Equals("README.md", StringComparison.OrdinalIgnoreCase));
+        fileArgs = readme is not null ? [readme] : ["."];
+    }
+    var fromStdin = fileArgs.Length == 1 && fileArgs[0] == "-";
     string full;
+    string? displayName = null;
+    string? remoteRoot = null;
+    List<string> fileSet = [];
+    bool startWithPicker = false;
     if (fromStdin)
     {
         full = "-";
     }
     else
     {
-        full = Path.GetFullPath(file);
-        if (!File.Exists(full))
+        var remote = fileArgs.Where(RemoteSource.IsRemote).ToList();
+        if (remote.Count > 0)
         {
-            Console.Error.WriteLine($"readmd: file not found: {file}");
-            return 2;
+            if (offlineArg) { Console.Error.WriteLine("readmd: cannot fetch a remote document with --offline."); return 2; }
+            try
+            {
+                foreach (var r in remote)
+                {
+                    Console.Error.WriteLine($"readmd: fetching {r} …");
+                    var fetched = await RemoteSource.FetchAsync(r, ct);
+                    fileSet.Add(fetched.LocalPath);
+                    displayName ??= fetched.DisplayName;
+                    remoteRoot ??= Path.GetDirectoryName(fetched.LocalPath);
+                }
+            }
+            catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or ArgumentException or TaskCanceledException)
+            {
+                Console.Error.WriteLine($"readmd: {ex.Message}");
+                return 1;
+            }
+        }
+        foreach (var a in fileArgs.Where(a => !RemoteSource.IsRemote(a)))
+        {
+            var expanded = FileArguments.Expand(a, out var isDirectory);
+            if (expanded.Count == 0)
+            {
+                Console.Error.WriteLine(isDirectory ? $"readmd: no Markdown files under {a}" : $"readmd: file not found: {a}");
+                return 2;
+            }
+            if (isDirectory && fileArgs.Length == 1) startWithPicker = true;
+            fileSet.AddRange(expanded);
+        }
+        fileSet = fileSet.Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        full = fileSet[0];
+        if (startWithPicker)
+        {
+            // Directory mode: open the most recently modified file and show the picker over the rest.
+            full = fileSet.OrderByDescending(f => { try { return File.GetLastWriteTimeUtc(f); } catch { return DateTime.MinValue; } }).First();
+            rootArg ??= Path.GetFullPath(fileArgs[0]);
+        }
+        else if (fileSet.Count > 1 && rootArg is null)
+        {
+            // Several files: the common parent is the sandbox so links between them resolve.
+            rootArg = FileArguments.CommonDirectory(fileSet);
         }
     }
 
@@ -216,9 +270,12 @@ root.SetAction(async (parse, ct) =>
             return 2;
         }
     }
+    // A remote document lives in the temp cache; its folder is its sandbox.
+    rootDir ??= remoteRoot;
 
     // Config: user-level + project-level (.readmd.json) merged; CLI flags take precedence over it.
-    var config = ConfigLoader.Load(fromStdin ? null : full);
+    // Remote documents only get the user-level config (their cache folder has no project file).
+    var config = ConfigLoader.Load(fromStdin || remoteRoot is not null ? null : full);
     if (ConfigLoader.LastError is { } configError)
         Console.Error.WriteLine($"readmd: warning — config ignored: {configError}");
     Timing.Mark("config loaded");
@@ -293,7 +350,10 @@ root.SetAction(async (parse, ct) =>
         ThemeName: customTheme is not null ? themeStr : null,
         NamedThemes: namedThemes,
         StartLine: startLine,
-        StartSearch: startSearch);
+        StartSearch: startSearch,
+        FileSet: fileSet,
+        StartWithPicker: startWithPicker,
+        DisplayName: displayName);
     if (widthArg is < 20)
     {
         Console.Error.WriteLine("readmd: --width must be at least 20 columns.");
@@ -329,7 +389,20 @@ root.SetAction(async (parse, ct) =>
         if (shouldPrint)
         {
             var printColors = colorMode == Readmd.Terminal.ColorMode.None ? Readmd.Terminal.ColorMode.TrueColor : colorMode;
-            return await RunPrintAsync(full, fromStdin, dark, ResolveColor(colorArg ?? config.Color), layout, printColors, viewerPrefs.Hyperlinks, GetDiagrams, ct);
+            bool useColor = ResolveColor(colorArg ?? config.Color);
+            if (fromStdin || fileSet.Count <= 1)
+                return await RunPrintAsync(full, fromStdin, dark, useColor, layout, printColors, viewerPrefs.Hyperlinks, GetDiagrams, ct);
+            // Several files: print each in order, separated by a rule naming the file.
+            var stdout = Console.OpenStandardOutput();
+            foreach (var f in fileSet)
+            {
+                var header = (Readmd.Terminal.Glyphs.Ascii ? "==== " : "━━━━ ") + Path.GetRelativePath(Directory.GetCurrentDirectory(), f).Replace('\\', '/') + "\n";
+                var hb = System.Text.Encoding.UTF8.GetBytes(header);
+                await stdout.WriteAsync(hb, ct);
+                var code = await RunPrintAsync(f, false, dark, useColor, layout, printColors, viewerPrefs.Hyperlinks, GetDiagrams, ct);
+                if (code != 0) return code;
+            }
+            return 0;
         }
         if (browser)
         {
@@ -505,9 +578,10 @@ static async Task<int> RunPrintAsync(string full, bool fromStdin, bool dark, boo
         new DocumentTextRenderer.Options(layout.LineNumbers, layout.TabSize, layout.SmartPunctuation, colors, hyperlinks) { DiagramText = diagramText });
     Timing.Mark("rendered");
     // Write UTF-8 bytes straight to the raw stdout stream so box-drawing/Unicode survives a
-    // redirected pipe or file regardless of the console's default code page.
+    // redirected pipe or file regardless of the console's default code page. The stream is a
+    // shared handle; don't dispose it (multi-file printing reuses it).
     var bytes = System.Text.Encoding.UTF8.GetBytes(text);
-    await using var stdout = Console.OpenStandardOutput();
+    var stdout = Console.OpenStandardOutput();
     await stdout.WriteAsync(bytes, ct);
     await stdout.FlushAsync(ct);
     return 0;
@@ -563,6 +637,9 @@ static async Task<int> RunTerminalAsync(string file, bool dark, DiagramTheme the
         NamedThemes = prefs.NamedThemes,
         StartLine = prefs.StartLine,
         StartSearch = prefs.StartSearch,
+        FileSet = prefs.FileSet,
+        StartWithPicker = prefs.StartWithPicker,
+        DisplayName = prefs.DisplayName,
         DiagramTheme = theme,
         SolidBackground = solidBackground,
         Theme = customTheme,
@@ -634,4 +711,5 @@ internal sealed record LayoutSettings(int MaxWidth, bool LineNumbers, int TabSiz
 internal sealed record ViewerPrefs(
     bool ThemeAuto, bool GraphicsAuto, Readmd.Terminal.ColorMode Colors, bool Hyperlinks, int WheelLines, bool ConfirmExternalLinks,
     bool Offline, bool Watch, bool RememberPosition, bool Scrollbar, string? ThemeName,
-    IReadOnlyDictionary<string, Readmd.Terminal.TerminalTheme> NamedThemes, int? StartLine, string? StartSearch);
+    IReadOnlyDictionary<string, Readmd.Terminal.TerminalTheme> NamedThemes, int? StartLine, string? StartSearch,
+    IReadOnlyList<string> FileSet, bool StartWithPicker, string? DisplayName);

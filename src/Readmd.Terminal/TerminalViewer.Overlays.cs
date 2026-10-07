@@ -466,8 +466,9 @@ public sealed partial class TerminalViewer
         _options = options ?? new TerminalViewerOptions { FilePath = "capture.md", DarkTerminal = dark };
         _diagrams = new NullDiagramRenderer();
         _currentPath = "capture.md";
-        _resolver = new LinkResolver(Directory.GetCurrentDirectory());
-        _imageLoader = new Readmd.Diagrams.ImageLoader(Directory.GetCurrentDirectory());
+        var root = _options.Root is not null ? Path.GetFullPath(_options.Root) : Directory.GetCurrentDirectory();
+        _resolver = new LinkResolver(root);
+        _imageLoader = new Readmd.Diagrams.ImageLoader(root);
         _watcher = null;
         _theme = _options.Theme ?? TerminalTheme.For(dark);
         _keyMap = _options.KeyMap ?? KeyMap.Default;

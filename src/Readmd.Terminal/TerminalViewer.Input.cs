@@ -1633,9 +1633,4 @@ public sealed partial class TerminalViewer
 
     private static string Truncate(string s, int max) =>
         s.Length <= max ? s : TextWidth.TrimToWidth(s, Math.Max(1, max - 1)) + "…";
-
-    // ---------------- stubs filled in by later phases ----------------
-    private void OpenQuickOpen() => SetStatus("Quick-open: coming in a later update");
-    private void OpenProjectSearch() => SetStatus("Project search: coming in a later update");
-    private void StepFile(int step) => SetStatus("Multi-file navigation: coming in a later update");
 }

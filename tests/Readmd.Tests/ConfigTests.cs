@@ -169,4 +169,22 @@ public class KeyMapTests
         Assert.Equal("alt+left", KeyMap.TokenFor(new KeyEvent(KeyKind.Left, Alt: true)));
         Assert.Null(KeyMap.TokenFor(new KeyEvent(KeyKind.MouseClick)));
     }
+
+    [Fact]
+    public void Default_bindings_do_not_shadow_each_other()
+    {
+        var km = KeyMap.Default;
+        // Regression: Follow was bound to "ctrl+shift+f", which normalizes to "ctrl+f" and stole PageDown.
+        Assert.Equal(EditorAction.PageDown, km.Resolve("ctrl+f"));
+        Assert.Equal(EditorAction.Follow, km.Resolve("alt+f"));
+        Assert.Equal(EditorAction.QuickOpen, km.Resolve("ctrl+p"));
+        Assert.Equal(EditorAction.ProjectSearch, km.Resolve("ctrl+g"));
+        Assert.Equal(EditorAction.NextFile, km.Resolve("] f"));
+        // Every action in the default table keeps at least one chord (nothing was overwritten).
+        foreach (var action in Enum.GetValues<EditorAction>())
+        {
+            if (action is EditorAction.None) continue;
+            Assert.True(km.ChordsFor(action).Count > 0, $"{action} lost its default binding");
+        }
+    }
 }

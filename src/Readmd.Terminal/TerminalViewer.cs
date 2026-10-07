@@ -88,6 +88,15 @@ public sealed class TerminalViewerOptions
     /// <summary>Open with this search active and jump to the first match (`+/pattern`).</summary>
     public string? StartSearch { get; init; }
 
+    /// <summary>The set of files given on the command line / found in directory mode (for ]f / [f).</summary>
+    public IReadOnlyList<string>? FileSet { get; init; }
+
+    /// <summary>Directory mode: open the file picker immediately instead of a document.</summary>
+    public bool StartWithPicker { get; init; }
+
+    /// <summary>Display name for remote documents (shown instead of the cache file name).</summary>
+    public string? DisplayName { get; init; }
+
     /// <summary>Test harness: highlight code on the calling thread so frames are deterministic.</summary>
     internal bool SynchronousHighlighting { get; init; }
 }
@@ -241,7 +250,8 @@ public sealed partial class TerminalViewer : IAsyncDisposable
             DrawLoadingFrame();
             await LoadAsync(_currentPath, pushHistory: true);
             ApplyStartPosition();
-            if (_statusMessage is null) SetStatus("press ? for help · f: link hints · Enter opens the first link", 5);
+            if (_options.StartWithPicker) ShowDirectoryPicker();
+            else if (_statusMessage is null) SetStatus("press ? for help · f: link hints · Ctrl+P: open file · Enter opens the first link", 5);
             RenderLoop();
             SavePosition();
         }

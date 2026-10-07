@@ -14,10 +14,11 @@ public sealed partial class TerminalViewer
     {
         // Focus/paste events outside a text prompt carry no command meaning.
         if (key.Kind is KeyKind.FocusIn or KeyKind.FocusOut) return;
-        if (key.Kind == KeyKind.Paste && !_searchMode && !_commandMode) return;
+        if (key.Kind == KeyKind.Paste && !_searchMode && !_commandMode && !_paletteMode) return;
 
         if (_searchMode) { HandleSearchKey(key); return; }
         if (_commandMode) { HandleCommandKey(key); return; }
+        if (_paletteMode) { HandlePaletteKey(key); return; }
         if (_hintMode) { HandleHintKey(key); return; }
         if (_tocMode) { HandleTocKey(key); return; }
         if (_focusMode) { HandleFocusKey(key); return; }

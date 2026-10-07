@@ -389,7 +389,7 @@ public sealed partial class TerminalViewer
     {
         _follow = !_follow;
         if (_follow) { _watchPaused = false; ScrollTo(_lines.Count); }
-        SetStatus(_follow ? "Follow mode: jumping to the end on every change (F to stop)" : "Follow mode off", 2.5);
+        SetStatus(_follow ? $"Follow mode: jumping to the end on every change ({_keyMap.Label(EditorAction.Follow, ":follow")} to stop)" : "Follow mode off", 2.5);
     }
 
     // ---------------- persisted state ----------------

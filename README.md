@@ -26,15 +26,19 @@ dnx readmd report.md --browser       # view in the browser (full fidelity)
 - **Azure DevOps `[[_TOC_]]`** marker support, plus a sticky TOC sidebar in the browser.
 - **Diagrams** from fenced code blocks: **mermaid**, **D2**, **Graphviz** (`graphviz`/`dot`), **PlantUML** (`plantuml`/`puml`/`c4`) with local tools, plus **ditaa, svgbob, nomnoml, pikchr, WaveDrom, Vega/Vega-Lite, BPMN, Excalidraw, TikZ, ERD, DBML, Structurizr, blockdiag family, bytefield, UMLet, WireViz, Symbolator, diagrams.net** through a [Kroki](https://kroki.io) server (also the fallback when a local tool is missing; self-host via `krokiUrl`, or `--offline` to never send diagram text anywhere). Azure DevOps `::: mermaid` containers work too. Rendered to images inline in the terminal and shown natively in the browser; on failure the error, the **text rendering** (D2 ≥ 0.7.1 and PlantUML can draw box art) or the source appears inline — never a blank gap. `s` toggles any diagram between image and source; `--graphics none` and `--print` show box art or source.
 - **Math** via KaTeX (browser) / a Unicode approximation (terminal) for `$…$`, `$$…$$` and ```` ```math ```` fences, including fractions, roots, accents, `\mathbb`/`\mathcal`, matrices and cases.
-- **Multi-file wiki navigation**: follow local `.md` links with back/forward history (sandboxed to the document's directory). Opening an external link asks for confirmation first.
+- **Multi-file wiki navigation**: follow local `.md` links with back/forward history (sandboxed to the document's directory). Opening an external link asks for confirmation first. `Ctrl+P` fuzzy quick-opens any Markdown file under the root (recent files first), `Ctrl+G` searches across all of them, and `]f` / `[f` step through the files you launched with (or the folder's siblings).
+- **Open anything**: a file, several files or globs (`docs/**/*.md`), a **directory** (`readmd .` lists its Markdown files, newest first), standard input, or a **remote document** — `https://…/file.md`, a GitHub `blob` URL, or `gh:owner/repo[@ref][/path]` (relative links and images are rewritten against the source). With no argument, the current folder's `README.md` opens.
 - **Browser mode** (`--browser`) for pixel-perfect rendering, served locally (loopback only) from an embedded web server. The browser view adds: **export** the current document to a self-contained `.html`, a **high-quality WYSIWYG `.pdf`** (matches the on-screen theme — dark stays dark — on a single page auto-sized to the content, nothing cropped), or **Print to PDF** (the browser's own print dialog); **copy buttons** on code blocks and **permalink anchors** on headings; a **diagram lightbox** (click any mermaid/D2 diagram to zoom/pan, copy or open its SVG); **project-wide search** across the wiki and a **`Ctrl+P` quick-open** file palette; and **persisted** theme/zen/sidebar preferences.
 - **Export & piping**: `--export` writes a self-contained `.html` or `.pdf`; with a redirected stdout (or stdin via `-`) it renders to text, so `readmd file.md | less -R` and `cat file.md | readmd -` just work.
 
 ## Usage
 
 ```
-readmd <file> [options]
-readmd -            # read Markdown from standard input
+readmd [<file>...] [options]
+readmd -                    # read Markdown from standard input
+readmd .                    # a directory: pick from its Markdown files (]f / [f step through them)
+readmd "docs/**/*.md"       # several files / globs (--print concatenates them)
+readmd gh:owner/repo        # a GitHub README (or gh:owner/repo@ref/docs/file.md, any https:// URL)
 
 Options:
   -b, --browser        Open in the browser instead of the terminal.
@@ -119,6 +123,8 @@ Vim-style motions are supported throughout (with count prefixes: `5j`, `12gg`), 
 | `t` | Table of contents (type to filter) | `Esc` | Clear search / selection |
 | `f` | **Link hints**: label every visible link, type a label to open | `F` | Link hints: copy the URL |
 | `Tab` / `Shift+Tab`, `Enter` | Cycle visible links / open the active (or first) one | `←` / `→` (or `Backspace`) | Back / forward (history, scroll restored) |
+| `Ctrl+P` | Quick-open a file under the root (fuzzy, recent first) | `Ctrl+G` | Search across all files (opens at the matching line) |
+| `]f` / `[f` | Next / previous file (launch set, or the folder's `.md` siblings) | | |
 | click / `Ctrl`+click | Follow a link (Ctrl skips the confirm) | `Ctrl` + mouse wheel, `+` / `-` | Zoom diagrams in / out |
 | `y` | Copy the top block (code without gutter, diagram source, table as text) | `Y` | Copy the whole document source |
 | `za` / `zc` / `zo` | Fold toggle / close / open the top section or `<details>` | `zM` / `zR` | Fold / unfold everything |
@@ -127,7 +133,7 @@ Vim-style motions are supported throughout (with count prefixes: `5j`, `12gg`), 
 | `o` | Open in browser | `m` | Mark mode (select + copy) |
 | `r` | Re-render | `:` | Command line (`:q`, `:e file`, `:123`, `:export out.pdf`, `:set width=100`, `:theme nord`, `:marks`, …) |
 | `T` | TOC sidebar (click an entry to jump) | `e` | Export to HTML/PDF next to the file |
-| `M` + letter / `'` + letter | Set / jump to a bookmark (`''` = back to where you jumped from) | `W` / `F` | Pause live reload / follow mode (jump to the end on every change) |
+| `M` + letter / `'` + letter | Set / jump to a bookmark (`''` = back to where you jumped from) | `W` / `Alt+f` | Pause live reload / follow mode (jump to the end on every change) |
 | `?` | Keybindings overlay | `q` (or `Ctrl+C`) | Quit |
 
 `<details>` blocks start collapsed (like GitHub); fold state survives live reloads. readmd remembers where you were in each file (and your search history) across sessions — `readmd file.md +120` or `+/pattern` overrides that, and `"rememberPosition": false` turns it off.

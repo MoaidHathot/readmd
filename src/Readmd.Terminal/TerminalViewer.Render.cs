@@ -278,7 +278,7 @@ public sealed partial class TerminalViewer
             // Also hard-clear when an overlay (help/TOC) opens or closes so diagrams don't bleed
             // through the panel, or when the cell size changed (font zoom).
             bool anyDiagramVisible = AnyDiagramVisible(height);
-            bool overlayOpen = _helpMode || _tocMode;
+            bool overlayOpen = _helpMode || _tocMode || _paletteMode;
             bool scrolled = _scroll != _lastDrawScroll;
             bool overlayChanged = overlayOpen != _overlayOpenLastFrame;
             // An explicit refresh ('r') performs a "clean wipe": render ONE diagram-free frame (text
@@ -323,7 +323,7 @@ public sealed partial class TerminalViewer
 
             // Don't draw Sixel diagrams while an overlay panel is open — they'd bleed through it.
             // Also skip on the single clear-only frame after a deep clear (see above).
-            if (!_helpMode && !_tocMode && !suppressDiagramsThisFrame)
+            if (!_helpMode && !_tocMode && !_paletteMode && !suppressDiagramsThisFrame)
                 DrawDiagrams(height);
             DrawSidebar();
             DrawScrollbar(height);
@@ -331,6 +331,7 @@ public sealed partial class TerminalViewer
             DrawStatusBar();
 
             if (_tocMode) DrawTocOverlay();
+            if (_paletteMode) DrawPaletteOverlay();
             if (_helpMode) DrawHelpOverlay();
 
             _screen.Reset();
@@ -873,7 +874,7 @@ public sealed partial class TerminalViewer
     /// <summary>"file.md › Section › Subsection" for the heading the viewport is in.</summary>
     private string Breadcrumb()
     {
-        var name = Path.GetFileName(_currentPath);
+        var name = _options.DisplayName ?? Path.GetFileName(_currentPath);
         if (_toc.Count == 0) return name;
         // Walk the TOC to the deepest heading at or above the top of the viewport, keeping ancestors.
         var trail = new List<TocEntry>();

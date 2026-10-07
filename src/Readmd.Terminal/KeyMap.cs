@@ -194,7 +194,7 @@ public sealed class KeyMap
         Bind(EditorAction.Bookmark, "M");
         Bind(EditorAction.GoBookmark, "'");
         Bind(EditorAction.ToggleWatch, "W");
-        Bind(EditorAction.Follow, "ctrl+shift+f");
+        Bind(EditorAction.Follow, "alt+f");   // not ctrl+shift+f: that normalizes to ctrl+f and would shadow PageDown
         Bind(EditorAction.Slides, "ctrl+s");
         return m;
     }
