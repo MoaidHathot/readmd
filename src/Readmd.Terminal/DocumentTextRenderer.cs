@@ -13,7 +13,7 @@ namespace Readmd.Terminal;
 public static class DocumentTextRenderer
 {
     /// <summary>Layout options for printed output.</summary>
-    public sealed record Options(bool LineNumbers = true, int TabSize = 4, bool SmartPunctuation = false)
+    public sealed record Options(bool LineNumbers = true, int TabSize = 4, bool SmartPunctuation = false, ColorMode Colors = ColorMode.TrueColor, bool Hyperlinks = true)
     {
         public static readonly Options Default = new();
     }
@@ -39,11 +39,11 @@ public static class DocumentTextRenderer
 
         var sb = new StringBuilder();
         foreach (var line in result.Lines)
-            AppendLine(sb, line, color);
+            AppendLine(sb, line, color, options, result.Links);
         return sb.ToString();
     }
 
-    private static void AppendLine(StringBuilder sb, DisplayLine line, bool color)
+    private static void AppendLine(StringBuilder sb, DisplayLine line, bool color, Options options, IReadOnlyList<TerminalLink> links)
     {
         if (!color)
         {
@@ -55,17 +55,37 @@ public static class DocumentTextRenderer
         {
             if (string.IsNullOrEmpty(span.Text)) continue;
             var open = new StringBuilder();
-            if (span.Color is { } c) open.Append("\e[38;2;").Append(c.R).Append(';').Append(c.G).Append(';').Append(c.B).Append('m');
-            if (span.Background is { } b) open.Append("\e[48;2;").Append(b.R).Append(';').Append(b.G).Append(';').Append(b.B).Append('m');
+            if (span.Color is { } c) AppendColor(open, c, foreground: true, options.Colors);
+            if (span.Background is { } b) AppendColor(open, b, foreground: false, options.Colors);
             if (span.Style.HasFlag(CellStyle.Bold)) open.Append("\e[1m");
             if (span.Style.HasFlag(CellStyle.Italic)) open.Append("\e[3m");
             if (span.Style.HasFlag(CellStyle.Underline)) open.Append("\e[4m");
             if (span.Style.HasFlag(CellStyle.Dim)) open.Append("\e[2m");
             if (span.Style.HasFlag(CellStyle.Strikethrough)) open.Append("\e[9m");
             if (span.Style.HasFlag(CellStyle.Reverse)) open.Append("\e[7m");
+            // OSC 8 hyperlinks for absolute targets (pagers like less -R pass them through).
+            string? href = options.Hyperlinks && span.LinkId is { } id && id < links.Count && LinkResolver.IsExternal(links[id].Url) ? links[id].Url : null;
+            if (href is not null) sb.Append("\e]8;;").Append(href).Append("\e\\");
             sb.Append(open).Append(span.Text);
             if (open.Length > 0) sb.Append("\e[0m");
+            if (href is not null) sb.Append("\e]8;;\e\\");
         }
         sb.Append('\n');
+    }
+
+    private static void AppendColor(StringBuilder sb, Rgb c, bool foreground, ColorMode mode)
+    {
+        switch (mode)
+        {
+            case ColorMode.TrueColor:
+                sb.Append(foreground ? "\e[38;2;" : "\e[48;2;").Append(c.R).Append(';').Append(c.G).Append(';').Append(c.B).Append('m');
+                break;
+            case ColorMode.Ansi256:
+                sb.Append(foreground ? "\e[38;5;" : "\e[48;5;").Append(ColorQuantizer.ToAnsi256(c)).Append('m');
+                break;
+            case ColorMode.Ansi16:
+                sb.Append("\e[").Append(ColorQuantizer.ToAnsi16Sgr(c, !foreground)).Append('m');
+                break;
+        }
     }
 }

@@ -134,7 +134,7 @@ public sealed partial class TerminalViewer
             for (int k = 0; k < rows; k++)
             {
                 var line = new DisplayLine { DiagramKey = reserveTag, IsPlaceholder = true };
-                if (k == 1) line.Spans.Add(new StyledSpan(new string(' ', 2 + _lines[i].DiagramIndent) + "⟳ rendering…", _theme.Muted, CellStyle.Italic));
+                if (k == 1) line.Spans.Add(new StyledSpan(new string(' ', 2 + _lines[i].DiagramIndent) + Glyphs.Rendering, _theme.Muted, CellStyle.Italic));
                 _lines.Insert(i + 1 + k, line);
             }
             if (i < _scroll) _scroll += rows;
@@ -207,7 +207,7 @@ public sealed partial class TerminalViewer
             int keep = 0;
             while (keep < cap.Spans.Count && cap.Spans[keep].Text.Trim().Length == 0) keep++;
             cap.Spans.RemoveRange(keep, cap.Spans.Count - keep);
-            cap.Spans.Add(new StyledSpan("✖ ", errColor, CellStyle.Bold));
+            cap.Spans.Add(new StyledSpan(Glyphs.Error, errColor, CellStyle.Bold));
             cap.Spans.Add(new StyledSpan(label, errColor, CellStyle.Bold));
 
             // Remove existing reserved rows for this anchor, then insert the error lines.

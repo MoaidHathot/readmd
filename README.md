@@ -46,8 +46,12 @@ Options:
         (-o)           extension: .html (single file, assets inlined) or .pdf.
       --print          Render to stdout and exit (plain text, or ANSI on a TTY).
                        Implied when stdout is a pipe/file, or when reading stdin.
-      --color <mode>   auto (default; honors NO_COLOR / FORCE_COLOR), always
-                       (e.g. `readmd f.md --color always | less -R`), or never.
+      --color <mode>   auto (default; detects depth, honors NO_COLOR / FORCE_COLOR), always,
+                       256, 16, or never. For --print, 'always' colors piped output
+                       (e.g. `readmd f.md --color always | less -R`).
+  -g, --graphics <m>   Inline image protocol: auto (detect), sixel, kitty, iterm2,
+                       half-block, or none.
+      --ascii          Plain ASCII glyphs instead of box drawing and symbols.
       --root <dir>     Directory local links/images may reach (default: the
                        document's folder), so ../sibling.md links work in a wiki.
   -w, --width <cols>   Maximum reading width (content is centred when the terminal
@@ -162,7 +166,13 @@ ignored.
   "theme": "nord",            // "dark" | "light" | "auto" | a custom theme name below
   "background": "solid",      // "solid" | "terminal"
   "d2Path": "/usr/local/bin/d2",
-  "graphics": "auto",         // "sixel" | "half-block" | "none" | "auto" (inline image mode)
+  "graphics": "auto",         // "sixel" | "kitty" | "iterm2" | "half-block" | "none" | "auto"
+  "color": "auto",            // "always" | "256" | "16" | "never" | "auto"
+  "hyperlinks": true,         // OSC 8 clickable links
+  "wheelLines": 3,            // lines per mouse-wheel notch
+  "confirmExternalLinks": true,
+  "ascii": false,             // 7-bit glyph set
+  "ambiguousWide": false,     // East Asian Ambiguous chars are 2 cells (CJK terminals)
   "maxWidth": 100,            // reading width in columns (0/absent = full terminal width)
   "lineNumbers": true,        // line-number gutter in code blocks
   "tabSize": 4,               // tab stop for tabs inside code blocks
@@ -235,7 +245,16 @@ The Markdig pipeline and diagram cache are shared by both front-ends, so the ter
 
 ## Terminal image support
 
-Inline diagrams and images in the terminal use the **Sixel** graphics protocol where available (Windows Terminal ≥ 1.22, WezTerm, xterm, mintty, foot, …). On terminals without Sixel, readmd automatically falls back to **Unicode half-block (▀) rendering**, which works on any truecolor terminal (kitty, iTerm2, the Linux console, tmux, …) — diagrams and images still render inline, just at lower resolution. Force a mode with `READMD_GRAPHICS=sixel|half-block|none` (or `"graphics"` in config); `none` shows only the diagram caption. You can also run with `--best-effort` and press `o` to view diagrams in the browser.
+Inline diagrams and images pick the best protocol the terminal supports — detected by **querying the terminal** (Device Attributes, the kitty graphics handshake) rather than guessing from `$TERM`:
+
+- **kitty graphics protocol** (kitty, Ghostty, WezTerm, Konsole): lossless PNG with alpha, so diagrams sit on a transparent background.
+- **iTerm2 inline images** (iTerm2, WezTerm, mintty, Hyper).
+- **Sixel** (Windows Terminal ≥ 1.22, xterm, foot, contour, mintty, …) with an adaptive palette: exact colours for diagrams, median-cut + dithering for photos.
+- **Unicode half-block (▀)** on any colour terminal (also used inside tmux unless passthrough is configured).
+
+Force a mode with `--graphics sixel|kitty|iterm2|half-block|none` (or `READMD_GRAPHICS`, or `"graphics"` in config); `none` shows diagram source instead. Under tmux, graphics are wrapped for passthrough (`set -g allow-passthrough on`).
+
+Colour depth is detected too (`COLORTERM`, `TERM`, `NO_COLOR`) and truecolor is downgraded to the 256- or 16-colour palette when needed; `--color always|256|16|never` overrides. Links are emitted as **OSC 8 hyperlinks** (Ctrl/Cmd+click in supporting terminals; `"hyperlinks": false` to disable). Frames use synchronized output (DEC 2026) and only changed rows are rewritten, so scrolling never tears. `--ascii` swaps every box-drawing/symbol glyph for 7-bit ASCII; `"ambiguousWide": true` treats East Asian Ambiguous characters as two cells for CJK terminals. With `--theme auto`, the terminal's reported background colour (OSC 11) picks dark or light.
 
 ## Platform support
 

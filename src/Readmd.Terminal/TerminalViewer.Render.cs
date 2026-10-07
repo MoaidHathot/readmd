@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text;
 using Readmd.Core;
 using SkiaSharp;
@@ -44,30 +45,50 @@ public sealed partial class TerminalViewer
             reader.Start();
         }
 
-        // Ask the terminal for its pixel size (CSI 14t). The reply is captured + swallowed by the
-        // input reader (so it never leaks as a keystroke); we read it back a moment later.
+        // Interrogate the terminal (pixel/cell size, Sixel via DA1, kitty graphics, background colour,
+        // synchronized output). Replies are captured + swallowed by the input reader (so they never
+        // leak as keystrokes); we read them back on the next ticks and refine graphics/theme choices.
         if (!Console.IsInputRedirected)
-            _screen.WriteEscape("\e[14t").Flush();
+            TerminalProbe.Start(_screen);
+        _screen.SetTitle(string.IsNullOrWhiteSpace(_title) ? Path.GetFileName(_currentPath) + " — readmd" : _title + " — readmd");
+
+        // Resize notifications: SIGWINCH on Unix (the Windows reader surfaces WINDOW_BUFFER_SIZE_EVENT
+        // through the console-size poll below). Both just mark a check; the reflow is debounced.
+        PosixSignalRegistration? winch = null;
+        if (!OperatingSystem.IsWindows())
+        {
+            try { winch = PosixSignalRegistration.Create(PosixSignal.SIGWINCH, _ => _resizePending = true); } catch { /* unsupported */ }
+        }
 
         try
         {
             RefreshCellSize();
-            int lastW = _screen.Width, lastH = _screen.Height;
             bool pixelApplied = _windowPixelWidth > 0;
-            var pixelDeadline = DateTime.UtcNow.AddSeconds(2);
+            var probeDeadline = DateTime.UtcNow.AddSeconds(2);
+            DateTime? resizeAt = null;
             while (_running)
             {
-                if (_screen.Width != lastW || _screen.Height != lastH)
+                // Console size is a syscall; sample it once per tick. Reflow only once the size has
+                // been stable for a moment (drag-resizing fires dozens of changes per second).
+                if (_screen.RefreshSize() || _resizePending)
                 {
-                    lastW = _screen.Width; lastH = _screen.Height;
+                    _resizePending = false;
+                    resizeAt = DateTime.UtcNow.AddMilliseconds(60);
+                    _dirty = true;
+                }
+                if (resizeAt is { } at && DateTime.UtcNow >= at)
+                {
+                    resizeAt = null;
+                    _screen.RefreshSize();
                     RefreshCellSize();
                     ReflowForResize();
                 }
 
-                // The CSI 14t reply arrives shortly after startup; apply it once it's available.
-                if (!pixelApplied && DateTime.UtcNow < pixelDeadline)
+                // Probe replies arrive shortly after startup; apply them as they land.
+                if (DateTime.UtcNow < probeDeadline)
                 {
-                    if (KeyReader.WindowPixelSize is not null) { RefreshCellSize(); pixelApplied = _windowPixelWidth > 0; }
+                    if (!pixelApplied && (KeyReader.WindowPixelSize is not null || KeyReader.CellPixelSize is not null)) { RefreshCellSize(); pixelApplied = _windowPixelWidth > 0 || KeyReader.CellPixelSize is not null; }
+                    ApplyProbeResults();
                 }
 
                 if (_dirty || _forceRepaintNextFrame)
@@ -99,7 +120,61 @@ public sealed partial class TerminalViewer
         }
         finally
         {
+            winch?.Dispose();
             Console.CancelKeyPress -= onCancel;
+        }
+    }
+
+    private volatile bool _resizePending;
+    private bool _probeGraphicsApplied, _probeThemeApplied;
+
+    /// <summary>
+    /// Applies what the terminal told us: a better graphics protocol than the heuristic guess, and
+    /// (for an "auto" theme) a light/dark palette matching the real background colour.
+    /// </summary>
+    private void ApplyProbeResults()
+    {
+        if (!_probeGraphicsApplied && _options.GraphicsAuto && (TerminalProbe.Kitty is not null || TerminalProbe.Sixel is not null))
+        {
+            var refined = TerminalProbe.Refine(_graphicsMode);
+            // Only decide once both answers (or the definitive kitty OK) are in, to avoid flip-flops.
+            if (TerminalProbe.Kitty == true || TerminalProbe.Sixel is not null)
+            {
+                _probeGraphicsApplied = true;
+                if (refined is { } mode && mode != _graphicsMode)
+                {
+                    lock (_stateLock)
+                    {
+                        _graphicsMode = mode;
+                        ClearDiagramCaches();
+                        foreach (var (key, result) in _diagramResults)
+                            if (result.Status == DiagramStatus.Ready) ReserveDiagramRows(key, result);
+                        _forceHardClear = true;
+                        _dirty = true;
+                    }
+                }
+            }
+        }
+        if (!_probeThemeApplied && TerminalProbe.Background is { } bg)
+        {
+            _probeThemeApplied = true;
+            if (_options.ThemeAuto && _options.Theme is null)
+            {
+                bool dark = bg.Luma < 128;
+                if (dark != _theme.IsDark)
+                {
+                    lock (_stateLock)
+                    {
+                        _theme = TerminalTheme.For(dark);
+                        _diagramTheme = dark ? DiagramTheme.Dark : DiagramTheme.Light;
+                        ClearDiagramCaches();
+                        Relayout();
+                        foreach (var key in _pendingDiagrams.Keys) _diagramRequested.Remove(key);
+                        _forceHardClear = true;
+                    }
+                    KickoffDiagramRenders(forceDiagramRerender: true);
+                }
+            }
         }
     }
 
@@ -126,9 +201,15 @@ public sealed partial class TerminalViewer
             cw = Math.Max(1, _windowPixelWidth / cols);
             ch = Math.Max(1, _windowPixelHeight / rows);
         }
+        else if (KeyReader.CellPixelSize is { } cell)
+        {
+            // CSI 16t gives the cell size directly (terminals that don't answer CSI 14t often do).
+            cw = Math.Max(1, cell.WidthPx);
+            ch = Math.Max(1, cell.HeightPx);
+        }
         else
         {
-            cw = 10; ch = 20; // estimate (non-Windows / no reply)
+            cw = 10; ch = 20; // estimate (no reply)
         }
 
         if (cw == _cellWidthPx && ch == _cellHeightPx) return;
@@ -317,7 +398,11 @@ public sealed partial class TerminalViewer
             else if (span.Color is { } c) _screen.SetForeground(c);
             else _screen.SetForeground(_theme.Text);
             if (span.Style != CellStyle.None) _screen.SetStyle(span.Style);
+            // OSC 8: real clickable hyperlinks in terminals that support them (Ctrl/Cmd+click).
+            string? href = span.LinkId is { } lid && lid < _links.Count ? HyperlinkTarget(_links[lid].Url) : null;
+            if (href is not null) _screen.BeginHyperlink(href, "l" + span.LinkId);
             _screen.Write(text);
+            if (href is not null) _screen.EndHyperlink();
             col += spanWidth;
         }
 
@@ -329,6 +414,22 @@ public sealed partial class TerminalViewer
             _screen.Write(new string(' ', width - col));
         }
         _screen.Reset();
+    }
+
+    /// <summary>
+    /// The URL to embed as an OSC 8 hyperlink for a Markdown link: absolute http(s)/mailto targets
+    /// as-is, local files as file:// URIs, nothing for in-document anchors (the terminal can't act on them).
+    /// </summary>
+    private string? HyperlinkTarget(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || url.StartsWith('#')) return null;
+        if (LinkResolver.IsExternal(url)) return url;
+        var resolved = _resolver.Resolve(url, _currentPath);
+        if (resolved.AbsolutePath is { } abs)
+        {
+            try { return new Uri(abs).AbsoluteUri; } catch { return null; }
+        }
+        return null;
     }
 
     private void DrawSpanWithHighlight(DisplayLine line, StyledSpan span, ref int col, int width)
@@ -433,14 +534,16 @@ public sealed partial class TerminalViewer
         // Dark, transparent images (logos/icons, e.g. a black SVG mark) would vanish when flattened
         // onto the dark theme background. For *images* (not diagrams, which are theme-aware), give
         // such content a light "card" backdrop so it stays visible — like GitHub does in dark mode.
-        var backdrop = (_theme.IsDark && isImage && content is not null && NeedsLightCard(key, content))
-            ? new Rgb(0xf6, 0xf8, 0xfa)
-            : _theme.Background;
+        bool lightCard = _theme.IsDark && isImage && content is not null && NeedsLightCard(key, content);
+        var backdrop = lightCard ? new Rgb(0xf6, 0xf8, 0xfa) : _theme.Background;
+        // Protocols that carry alpha (kitty, iTerm2) can sit directly on a transparent terminal
+        // background; Sixel/half-block must be flattened onto the theme colour.
+        bool keepAlpha = !lightCard && !_solidBackground && _graphicsMode is GraphicsMode.Kitty or GraphicsMode.ITerm2;
 
         var scaled = new SKBitmap(w, snappedH);
         using (var canvas = new SKCanvas(scaled))
         {
-            canvas.Clear(ToSkColor(backdrop));
+            canvas.Clear(keepAlpha ? SKColors.Transparent : ToSkColor(backdrop));
             if (content is not null)
             {
                 // Center within the snapped canvas (fit may leave a hair of slack on one axis).
@@ -553,10 +656,10 @@ public sealed partial class TerminalViewer
                     continue;
                 }
 
-                var cacheKey = $"{key}-{(_theme.IsDark ? "d" : "l")}-{_screen.Width}-{srcY}-{srcH}";
+                var cacheKey = $"{key}-{(_theme.IsDark ? "d" : "l")}-{_screen.Width}-{srcY}-{srcH}-{_graphicsMode}";
                 if (!_sixelCache.TryGetValue(cacheKey, out var sixel))
                 {
-                    sixel = BuildCroppedSixel(scaled, srcY, srcH);
+                    sixel = BuildCroppedGraphics(scaled, srcY, srcH, cacheKey, visibleRows);
                     _sixelCache[cacheKey] = sixel;
                 }
 
@@ -564,6 +667,26 @@ public sealed partial class TerminalViewer
                 _screen.WriteEscape(sixel);
             }
         }
+    }
+
+    /// <summary>Encodes a visible slice of a scaled bitmap in the active graphics protocol.</summary>
+    private string BuildCroppedGraphics(SKBitmap scaled, int srcY, int srcH, string cacheKey, int rows)
+    {
+        if (_graphicsMode == GraphicsMode.Sixel) return BuildCroppedSixel(scaled, srcY, srcH);
+        int cols = Math.Max(1, (int)Math.Ceiling(scaled.Width / (double)_cellWidthPx));
+        if (srcY == 0 && srcH == scaled.Height)
+            return _graphicsMode == GraphicsMode.Kitty
+                ? KittyEncoder.Encode(scaled, cols, rows, KittyEncoder.IdFor(cacheKey))
+                : ITerm2Encoder.Encode(scaled, cols, rows);
+        using var crop = new SKBitmap(scaled.Width, srcH);
+        using (var canvas = new SKCanvas(crop))
+        {
+            canvas.Clear(SKColors.Transparent);
+            canvas.DrawBitmap(scaled, new SKRect(0, srcY, scaled.Width, srcY + srcH), new SKRect(0, 0, scaled.Width, srcH));
+        }
+        return _graphicsMode == GraphicsMode.Kitty
+            ? KittyEncoder.Encode(crop, cols, rows, KittyEncoder.IdFor(cacheKey))
+            : ITerm2Encoder.Encode(crop, cols, rows);
     }
 
     /// <summary>
@@ -602,7 +725,7 @@ public sealed partial class TerminalViewer
         targetW = Math.Min(targetW, Math.Max(1, _screen.Width - 1));
 
         using var resized = scaled.Resize(new SKImageInfo(targetW, targetH), SKSamplingOptions.Default) ?? scaled;
-        return HalfBlockEncoder.Encode(resized, _theme.Background);
+        return HalfBlockEncoder.Encode(resized, _theme.Background, _screen.Colors);
     }
 
     /// <summary>
@@ -672,7 +795,7 @@ public sealed partial class TerminalViewer
         if (_searchMode)
         {
             string flags = (_searchRegex ? " re" : "") + (EffectiveCaseSensitive ? " Aa" : "");
-            left = $" /{_searchQuery}▏";
+            left = $" /{_searchQuery}{Glyphs.Cursor}";
             if (flags.Length > 0) left += $" [{flags.Trim()}]";
             if (_searchError is not null) left += "  (invalid: " + Truncate(_searchError, 30) + ")";
             else if (_searchHits.Count > 0) left += $"  [{_searchHitIndex + 1}/{_searchHits.Count}]";
@@ -680,7 +803,7 @@ public sealed partial class TerminalViewer
         }
         else if (_commandMode)
         {
-            left = $" :{_commandText}▏";
+            left = $" :{_commandText}{Glyphs.Cursor}";
         }
         else if (_hintMode)
         {
@@ -739,8 +862,8 @@ public sealed partial class TerminalViewer
         }
         if (trail.Count == 0) return name;
         int room = Math.Max(20, _screen.Width / 2);
-        var crumb = name + " › " + string.Join(" › ", trail.Select(t => t.Title));
-        return TextWidth.Of(crumb) <= room ? crumb : "… › " + Truncate(trail[^1].Title, room - 6);
+        var crumb = name + Glyphs.Crumb + string.Join(Glyphs.Crumb, trail.Select(t => t.Title));
+        return TextWidth.Of(crumb) <= room ? crumb : Glyphs.Ellipsis + Glyphs.Crumb + Truncate(trail[^1].Title, room - 6);
     }
 
     // ---------------- focused image view ----------------
@@ -830,7 +953,7 @@ public sealed partial class TerminalViewer
             // Two pixel rows per terminal row; width is one pixel per cell.
             using var resized = crop.Resize(new SKImageInfo(Math.Max(1, visCols), Math.Max(1, visRows * 2)),
                 _highQualitySampling) ?? crop;
-            var lines = HalfBlockEncoder.Encode(resized, _theme.Background);
+            var lines = HalfBlockEncoder.Encode(resized, _theme.Background, _screen.Colors);
             for (int i = 0; i < lines.Count && drawRow + i < viewRows; i++)
             {
                 _screen.MoveTo(drawRow + i, drawCol);
@@ -840,7 +963,12 @@ public sealed partial class TerminalViewer
         else
         {
             _screen.MoveTo(drawRow, drawCol);
-            _screen.WriteEscape(SixelEncoder.Encode(crop, _theme.Background));
+            _screen.WriteEscape(_graphicsMode switch
+            {
+                GraphicsMode.Kitty => KittyEncoder.Encode(crop, visCols, visRows, KittyEncoder.IdFor("focus")),
+                GraphicsMode.ITerm2 => ITerm2Encoder.Encode(crop, visCols, visRows),
+                _ => SixelEncoder.Encode(crop, _theme.Background),
+            });
         }
 
         DrawFocusHint();

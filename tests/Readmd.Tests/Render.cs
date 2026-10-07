@@ -3,6 +3,8 @@ using Markdig.Extensions.AutoIdentifiers;
 using Readmd.Core;
 using Readmd.Terminal;
 
+[assembly: CollectionBehavior(DisableTestParallelization = true)]
+
 namespace Readmd.Tests;
 
 /// <summary>Helpers to render Markdown to terminal display lines for assertions.</summary>

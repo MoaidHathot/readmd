@@ -113,7 +113,7 @@ public sealed partial class MarkdownTerminalRenderer
         int number = list.IsOrdered ? ParseListStart(list.OrderedStart, list.BulletType) : 1;
         char delimiter = list.IsOrdered && list.OrderedDelimiter == ')' ? ')' : '.';
         // Unordered bullets vary by nesting depth: • ◦ ▪ (cycling).
-        string[] bullets = { "• ", "◦ ", "▪ " };
+        string[] bullets = { Glyphs.Bullet1, Glyphs.Bullet2, Glyphs.Bullet3 };
         string bullet = bullets[_listDepth % bullets.Length];
         bool loose = list.IsLoose;
         _listDepth++;
@@ -234,7 +234,7 @@ public sealed partial class MarkdownTerminalRenderer
         {
             if (child is LeafBlock leaf && leaf.Inline is not null)
             {
-                EmitInlineBlock(leaf.Inline, indent + 2, sourceLine: leaf.Line + 1, baseColor: Theme.Quote, baseStyle: CellStyle.Italic, gutterColor: Theme.Rule, gutter: "▌ ");
+                EmitInlineBlock(leaf.Inline, indent + 2, sourceLine: leaf.Line + 1, baseColor: Theme.Quote, baseStyle: CellStyle.Italic, gutterColor: Theme.Rule, gutter: Glyphs.QuoteBar);
             }
             else
             {
@@ -254,12 +254,12 @@ public sealed partial class MarkdownTerminalRenderer
         var kind = alert.Kind.ToString().ToUpperInvariant();
         (string icon, string title, Rgb color) = kind switch
         {
-            "NOTE" => ("ℹ", "Note", Theme.IsDark ? Rgb.FromHex("#4493f8") : Rgb.FromHex("#0969da")),
-            "TIP" => ("✔", "Tip", Theme.IsDark ? Rgb.FromHex("#3fb950") : Rgb.FromHex("#1a7f37")),
-            "IMPORTANT" => ("◆", "Important", Theme.IsDark ? Rgb.FromHex("#ab7df8") : Rgb.FromHex("#8250df")),
-            "WARNING" => ("⚠", "Warning", Theme.IsDark ? Rgb.FromHex("#d29922") : Rgb.FromHex("#9a6700")),
-            "CAUTION" => ("⛔", "Caution", Theme.IsDark ? Rgb.FromHex("#f85149") : Rgb.FromHex("#cf222e")),
-            _ => ("▌", TitleCase(kind), Theme.Accent),
+            "NOTE" => (Glyphs.AlertNote, "Note", Theme.IsDark ? Rgb.FromHex("#4493f8") : Rgb.FromHex("#0969da")),
+            "TIP" => (Glyphs.AlertTip, "Tip", Theme.IsDark ? Rgb.FromHex("#3fb950") : Rgb.FromHex("#1a7f37")),
+            "IMPORTANT" => (Glyphs.AlertImportant, "Important", Theme.IsDark ? Rgb.FromHex("#ab7df8") : Rgb.FromHex("#8250df")),
+            "WARNING" => (Glyphs.AlertWarning, "Warning", Theme.IsDark ? Rgb.FromHex("#d29922") : Rgb.FromHex("#9a6700")),
+            "CAUTION" => (Glyphs.AlertCaution, "Caution", Theme.IsDark ? Rgb.FromHex("#f85149") : Rgb.FromHex("#cf222e")),
+            _ => (Glyphs.QuoteBar.Trim(), TitleCase(kind), Theme.Accent),
         };
 
 
@@ -269,14 +269,14 @@ public sealed partial class MarkdownTerminalRenderer
             new(icon + " ", color, CellStyle.Bold),
             new(title, color, CellStyle.Bold),
         };
-        EmitWrapped(header, indent + 2, gutterColor: color, gutter: "▌ ");
+        EmitWrapped(header, indent + 2, gutterColor: color, gutter: Glyphs.QuoteBar);
 
         // Body: each child block, with the colored gutter continued.
         foreach (var child in alert)
         {
             if (child is LeafBlock leaf && leaf.Inline is not null)
             {
-                EmitInlineBlock(leaf.Inline, indent + 2, sourceLine: leaf.Line + 1, gutterColor: color, gutter: "▌ ");
+                EmitInlineBlock(leaf.Inline, indent + 2, sourceLine: leaf.Line + 1, gutterColor: color, gutter: Glyphs.QuoteBar);
             }
             else
             {
@@ -301,9 +301,9 @@ public sealed partial class MarkdownTerminalRenderer
         // A short labeled separator: ── Footnotes ───
         var sep = new DisplayLine();
         int dash = Math.Max(0, Math.Min(_width - 1, 40) - " Footnotes ".Length);
-        sep.Spans.Add(new StyledSpan("── ", Theme.Rule));
+        sep.Spans.Add(new StyledSpan(new string(Glyphs.Rule, 2) + " ", Theme.Rule));
         sep.Spans.Add(new StyledSpan("Footnotes", Theme.Muted, CellStyle.Bold));
-        sep.Spans.Add(new StyledSpan(" " + new string('─', dash), Theme.Rule));
+        sep.Spans.Add(new StyledSpan(" " + new string(Glyphs.Rule, dash), Theme.Rule));
         _lines.Add(sep);
         AddBlank();
 
@@ -570,7 +570,7 @@ public sealed partial class MarkdownTerminalRenderer
         var highlightBg = Theme.IsDark ? Theme.Background.Lighten(0.12) : Theme.Background.Darken(0.08);
 
         // Top border:  ───────┬────────────────
-        EmitGridBorder(pad, numWidth, frameWidth, '┬', rule);
+        EmitGridBorder(pad, numWidth, frameWidth, Glyphs.FrameTop, rule);
 
         // Header:      <lang> · title  │
         var langLabel = language.Split([' ', '\t', '{'], 2)[0].ToLowerInvariant();
@@ -579,17 +579,17 @@ public sealed partial class MarkdownTerminalRenderer
             var header = new DisplayLine();
             if (pad.Length > 0) header.Spans.Add(new StyledSpan(pad));
             header.Spans.Add(new StyledSpan(gutter, rule));
-            header.Spans.Add(new StyledSpan("│ ", rule));
+            header.Spans.Add(new StyledSpan(Glyphs.FrameV + " ", rule));
             if (!string.IsNullOrEmpty(langLabel))
                 header.Spans.Add(new StyledSpan(langLabel, Theme.Heading, CellStyle.Bold));
             if (options.Title is { Length: > 0 } title)
             {
-                if (!string.IsNullOrEmpty(langLabel)) header.Spans.Add(new StyledSpan("  ·  ", Theme.Muted));
+                if (!string.IsNullOrEmpty(langLabel)) header.Spans.Add(new StyledSpan(Glyphs.Dot, Theme.Muted));
                 header.Spans.Add(new StyledSpan(TextWidth.TrimToWidth(title, Math.Max(4, interior - langLabel.Length - 5)), Theme.Text, CellStyle.Italic));
             }
             _lines.Add(header);
             // Header separator:  ───────┼────────────────
-            EmitGridBorder(pad, numWidth, frameWidth, '┼', rule);
+            EmitGridBorder(pad, numWidth, frameWidth, Glyphs.FrameMid, rule);
         }
 
         int n = 1;
@@ -608,10 +608,10 @@ public sealed partial class MarkdownTerminalRenderer
                 // Line number on the first row, a continuation arrow on wrapped rows. The gutter is
                 // exactly (numWidth + 1) wide so the '│' lines up with the ┬/┼/┴ junctions.
                 string gutterText = numbers
-                    ? (w == 0 ? n.ToString().PadLeft(numWidth) + " " : "↳".PadLeft(numWidth) + " ")
-                    : (w == 0 ? " " : "↳");
+                    ? (w == 0 ? n.ToString().PadLeft(numWidth) + " " : Glyphs.Continuation.PadLeft(numWidth) + " ")
+                    : (w == 0 ? " " : Glyphs.Continuation);
                 line.Spans.Add(new StyledSpan(gutterText, w == 0 ? (highlighted ? Theme.Accent : numColor) : rule, highlighted && w == 0 ? CellStyle.Bold : CellStyle.None));
-                line.Spans.Add(new StyledSpan("│ ", rule));
+                line.Spans.Add(new StyledSpan(Glyphs.FrameV + " ", rule));
                 if (highlighted)
                 {
                     // Emphasized line: tint its content cells (the `{1,3-5}` / hl_lines convention).
@@ -626,7 +626,7 @@ public sealed partial class MarkdownTerminalRenderer
         }
 
         // Bottom border:  ───────┴────────────────
-        EmitGridBorder(pad, numWidth, frameWidth, '┴', rule);
+        EmitGridBorder(pad, numWidth, frameWidth, Glyphs.FrameBottom, rule);
 
         // Tag every row of the block so a background highlighter can restyle it in place.
         if (blockId != 0)
@@ -671,7 +671,7 @@ public sealed partial class MarkdownTerminalRenderer
     {
         int left = numWidth + 1;              // gutter chars before the junction
         int right = Math.Max(1, frameWidth - left - 1);
-        var bar = new string('─', left) + junction + new string('─', right);
+        var bar = new string(Glyphs.FrameH, left) + junction + new string(Glyphs.FrameH, right);
         var line = new DisplayLine();
         if (pad.Length > 0) line.Spans.Add(new StyledSpan(pad));
         line.Spans.Add(new StyledSpan(bar, color));
@@ -683,7 +683,7 @@ public sealed partial class MarkdownTerminalRenderer
     {
         EnsureBlankBefore();
         var line = new DisplayLine();
-        line.Spans.Add(new StyledSpan(new string('─', Math.Max(8, _width - 1)), Theme.Rule));
+        line.Spans.Add(new StyledSpan(new string(Glyphs.Rule, Math.Max(8, _width - 1)), Theme.Rule));
         _lines.Add(line);
         AddBlank();
     }
@@ -711,11 +711,11 @@ public sealed partial class MarkdownTerminalRenderer
         EnsureBlankBefore();
         var color = Theme.Accent;
         if (!string.IsNullOrEmpty(name))
-            EmitWrapped([new StyledSpan(TitleCase(name), color, CellStyle.Bold)], indent + 2, gutterColor: color, gutter: "▌ ");
+            EmitWrapped([new StyledSpan(TitleCase(name), color, CellStyle.Bold)], indent + 2, gutterColor: color, gutter: Glyphs.QuoteBar);
         foreach (var child in container)
         {
             if (child is Markdig.Syntax.LeafBlock leaf && leaf.Inline is not null)
-                EmitInlineBlock(leaf.Inline, indent + 2, sourceLine: leaf.Line + 1, gutterColor: color, gutter: "▌ ");
+                EmitInlineBlock(leaf.Inline, indent + 2, sourceLine: leaf.Line + 1, gutterColor: color, gutter: Glyphs.QuoteBar);
             else
                 RenderBlock(child, indent + 2);
         }
@@ -726,7 +726,7 @@ public sealed partial class MarkdownTerminalRenderer
     private void RenderFigureCaption(Markdig.Extensions.Figures.FigureCaption caption, int indent)
     {
         if (caption.Inline is null) return;
-        var spans = new List<StyledSpan> { new("— ", Theme.Muted) };
+        var spans = new List<StyledSpan> { new(Glyphs.Caption, Theme.Muted) };
         spans.AddRange(InlineToSpans(caption.Inline, Theme.Muted, CellStyle.Italic));
         EmitWrapped(spans, indent + 2);
     }
@@ -739,7 +739,7 @@ public sealed partial class MarkdownTerminalRenderer
         {
             if (child is Markdig.Syntax.LeafBlock leaf && leaf.Inline is not null)
             {
-                var spans = new List<StyledSpan> { new("‖ ", Theme.Rule) };
+                var spans = new List<StyledSpan> { new(Glyphs.FooterBar, Theme.Rule) };
                 spans.AddRange(InlineToSpans(leaf.Inline, Theme.Muted, CellStyle.Italic | CellStyle.Dim));
                 EmitWrapped(spans, indent);
             }
@@ -783,7 +783,7 @@ public sealed partial class MarkdownTerminalRenderer
         var anchor = NewLine(indent, null, 0, null, null);
         anchor.DiagramKey = request.Key;
         anchor.DiagramIndent = indent;
-        anchor.Spans.Add(new StyledSpan("◆ ", Theme.Accent));
+        anchor.Spans.Add(new StyledSpan(Glyphs.Diagram, Theme.Accent));
         anchor.Spans.Add(new StyledSpan(label + " diagram", Theme.Muted, CellStyle.Italic));
         _lines.Add(anchor);
         _pendingDiagrams[request.Key] = request;
@@ -828,13 +828,13 @@ public sealed partial class MarkdownTerminalRenderer
             // same link id so clicking anywhere on the image follows it.
             var id = RegisterLink(linkUrl);
             anchor.ImageLinkId = id;
-            anchor.Spans.Add(new StyledSpan("▣ ", Theme.Accent, LinkId: id));
+            anchor.Spans.Add(new StyledSpan(Glyphs.Image, Theme.Accent, LinkId: id));
             anchor.Spans.Add(new StyledSpan(caption, Theme.Link, CellStyle.Underline, id));
             AppendLinkMarker(anchor.Spans, id);
         }
         else
         {
-            anchor.Spans.Add(new StyledSpan("▣ ", Theme.Accent));
+            anchor.Spans.Add(new StyledSpan(Glyphs.Image, Theme.Accent));
             anchor.Spans.Add(new StyledSpan(caption, Theme.Muted, CellStyle.Italic));
         }
         _lines.Add(anchor);
@@ -862,7 +862,7 @@ public sealed partial class MarkdownTerminalRenderer
         var anchor = NewLine(indent, null, 0, gutterColor, gutter);
         anchor.DiagramKey = groupKey;
         anchor.DiagramIndent = indent;
-        anchor.Spans.Add(new StyledSpan("▣ ", Theme.Accent));
+        anchor.Spans.Add(new StyledSpan(Glyphs.Image, Theme.Accent));
         anchor.Spans.Add(new StyledSpan($"{images.Count} images", Theme.Muted, CellStyle.Italic));
         _lines.Add(anchor);
         _pendingImageGroups[groupKey] = urls;

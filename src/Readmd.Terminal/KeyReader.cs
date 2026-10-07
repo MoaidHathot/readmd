@@ -180,7 +180,8 @@ internal static class KeyReader
                 bool bel = c1 == ']' && b[i] == 0x07;
                 if (st || bel)
                 {
-                    TryParseReport(Encoding.UTF8.GetString(b.ToArray(), 1, i));
+                    int bodyLen = st ? i - 2 : i - 1;   // after ESC, before the terminator
+                    TryParseReport(Encoding.UTF8.GetString(b.ToArray(), 1, Math.Max(0, bodyLen)));
                     return i + 1;
                 }
             }
@@ -433,6 +434,12 @@ internal static class KeyReader
                                 if (done)
                                 {
                                     var seq = escBuf.ToString(1, escBuf.Length - 1);
+                                    if (osc)
+                                    {
+                                        // Strip the terminator (BEL or ESC \) from the report body.
+                                        if (seq.EndsWith('\a')) seq = seq[..^1];
+                                        else if (seq.EndsWith("\x1b\\")) seq = seq[..^2];
+                                    }
                                     inEscape = false;
                                     escBuf.Clear();
                                     if (seq == "[200~") { inPaste = true; pasteBuf.Clear(); continue; }

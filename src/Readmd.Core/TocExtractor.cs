@@ -65,6 +65,9 @@ public static class TocExtractor
             case Markdig.Extensions.SmartyPants.SmartyPant pant:
                 sb.Append(SmartyPantText(pant));
                 break;
+            case Markdig.Extensions.Abbreviations.AbbreviationInline abbr:
+                sb.Append(abbr.Abbreviation.Label);
+                break;
             case LineBreakInline:
                 sb.Append(' ');
                 break;

@@ -204,7 +204,7 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
             EmitWrapped([new StyledSpan(string.Join("  ", tags.Select(t => $"#{t}")), theme.Accent)], 0);
 
         var rule = new DisplayLine();
-        rule.Spans.Add(new StyledSpan(new string('─', Math.Max(8, _width - 1)), theme.Rule));
+        rule.Spans.Add(new StyledSpan(new string(Glyphs.Rule, Math.Max(8, _width - 1)), theme.Rule));
         _lines.Add(rule);
         TagBlock(start, BlockKind.FrontMatter, 1, text: title);
         AddBlank();
@@ -292,7 +292,7 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
             EmitWrapped(h1, 2, headingId: id, sourceLine: sourceLine, lineBackground: theme.BackgroundElevated);
             // underline rule
             var rule = new DisplayLine();
-            rule.Spans.Add(new StyledSpan(new string('━', Math.Max(8, Math.Min(_width - 1, TextWidth.Of(titleText) + 4))), theme.H1));
+            rule.Spans.Add(new StyledSpan(new string(Glyphs.H1Rule, Math.Max(8, Math.Min(_width - 1, TextWidth.Of(titleText) + 4))), theme.H1));
             _lines.Add(rule);
         }
         else
@@ -301,11 +301,11 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
             // own glyph so H4/H5/H6 remain distinguishable.
             var (marker, color, extraStyle) = level switch
             {
-                2 => ("▌ ", theme.H2, CellStyle.None),
-                3 => ("● ", theme.H3, CellStyle.None),
-                4 => ("◗ ", theme.Heading, CellStyle.None),
-                5 => ("▸ ", theme.Heading, CellStyle.None),
-                _ => ("· ", theme.Muted, CellStyle.Italic),
+                2 => (Glyphs.H2Marker, theme.H2, CellStyle.None),
+                3 => (Glyphs.H3Marker, theme.H3, CellStyle.None),
+                4 => (Glyphs.H4Marker, theme.Heading, CellStyle.None),
+                5 => (Glyphs.H5Marker, theme.Heading, CellStyle.None),
+                _ => (Glyphs.H6Marker, theme.Muted, CellStyle.Italic),
             };
             var spans = new List<StyledSpan> { new(marker, color, CellStyle.Bold) };
             spans.AddRange(spansFor(color, CellStyle.Bold | extraStyle));
@@ -313,7 +313,7 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
             if (level == 2)
             {
                 var rule = new DisplayLine();
-                rule.Spans.Add(new StyledSpan(new string('─', Math.Max(8, _width - 1)), theme.Rule));
+                rule.Spans.Add(new StyledSpan(new string(Glyphs.Rule, Math.Max(8, _width - 1)), theme.Rule));
                 _lines.Add(rule);
             }
         }
@@ -482,7 +482,7 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
             var line = new DisplayLine();
             var pad = new string(' ', indent + (entry.Level - 1) * 2);
             var id = RegisterLink("#" + entry.Id);
-            line.Spans.Add(new StyledSpan(pad + "• ", theme.Muted));
+            line.Spans.Add(new StyledSpan(pad + Glyphs.Bullet1, theme.Muted));
             line.Spans.Add(new StyledSpan(entry.Title, theme.Link, CellStyle.Underline, id));
             _lines.Add(line);
         }
@@ -583,7 +583,7 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
                 {
                     // GitHub shows a colour swatch after `#rrggbb` / rgb() / hsl() inline code.
                     Leaf(spans, code.Content, theme.Code, style, linkId);
-                    spans.Add(new StyledSpan(" ■", chip, style, linkId));
+                    spans.Add(new StyledSpan(" " + Glyphs.ColorChip, chip, style, linkId));
                     break;
                 }
                 Leaf(spans, code.Content, theme.Code, style, linkId);
@@ -602,13 +602,13 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
                         // show a play marker + alt as a followable link instead of fetching the page
                         // as if it were an image.
                         var mediaId = RegisterLink(link.Url ?? "");
-                        spans.Add(new StyledSpan("▶ ", theme.Accent, style, mediaId));
+                        spans.Add(new StyledSpan(Glyphs.Media, theme.Accent, style, mediaId));
                         spans.Add(new StyledSpan(string.IsNullOrWhiteSpace(alt) ? link.Url ?? "media" : alt, theme.Link, style | CellStyle.Underline, mediaId));
                         AppendLinkMarker(spans, mediaId);
                         break;
                     }
                     if (_suppressImagePlaceholders == 0)
-                        spans.Add(new StyledSpan($"🖼 {alt} ({link.Url})", theme.Muted, style | CellStyle.Italic, linkId));
+                        spans.Add(new StyledSpan($"{Glyphs.ImagePlaceholder} {alt} ({link.Url})", theme.Muted, style | CellStyle.Italic, linkId));
                     break;
                 }
                 var id = RegisterLink(link.Url ?? "");
@@ -636,8 +636,9 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
                 Leaf(spans, TocExtractor.SmartyPantText(pant), color, style, linkId);
                 break;
             case Markdig.Extensions.TaskLists.TaskList task:
-                // GitHub task list checkbox. ☑ when checked, ☐ when unchecked.
-                spans.Add(new StyledSpan(task.Checked ? "☑ " : "☐ ",
+                // GitHub task list checkbox. ☑ when checked, ☐ when unchecked. The literal that follows
+                // already starts with the source's space, so the glyph itself carries none.
+                spans.Add(new StyledSpan((task.Checked ? Glyphs.Checked : Glyphs.Unchecked).TrimEnd(),
                     task.Checked ? (theme.IsDark ? Rgb.FromHex("#3fb950") : Rgb.FromHex("#1a7f37")) : theme.Muted,
                     style, linkId));
                 break;
@@ -689,7 +690,7 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
                     break;
                 case HtmlFragments.TokenKind.Open when tok.Name == "img":
                     if (_suppressImagePlaceholders == 0 && tok.Attr("src") is { Length: > 0 } src)
-                        spans.Add(new StyledSpan($"🖼 {tok.Attr("alt") ?? ""} ({src})".Replace("  ", " "), theme.Muted, style | CellStyle.Italic, linkId));
+                        spans.Add(new StyledSpan($"{Glyphs.ImagePlaceholder} {tok.Attr("alt") ?? ""} ({src})".Replace("  ", " "), theme.Muted, style | CellStyle.Italic, linkId));
                     break;
                 case HtmlFragments.TokenKind.Open when tok.Name == "abbr":
                     _html.Push(tok, this);
@@ -778,6 +779,7 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
             if (inline is LiteralInline lit) sb.Append(lit.Content.AsSpan());
             else if (inline is HtmlEntityInline entity) sb.Append(entity.Transcoded.AsSpan());
             else if (inline is Markdig.Extensions.SmartyPants.SmartyPant pant) sb.Append(TocExtractor.SmartyPantText(pant));
+            else if (inline is Markdig.Extensions.Abbreviations.AbbreviationInline abbr) sb.Append(abbr.Abbreviation.Label);
             else if (inline is CodeInline code) sb.Append(code.Content);
             else if (inline is ContainerInline c) sb.Append(GetInlineText(c));
         }
@@ -829,7 +831,7 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
     {
         if (footnote.IsBackLink) return;   // we don't render the back-reference arrows
         int n = footnote.Footnote?.Order ?? footnote.Index + 1;
-        spans.Add(new StyledSpan(ToSuperscript(n), theme.Accent, style | CellStyle.Bold, linkId));
+        spans.Add(new StyledSpan(Glyphs.Superscript(n), theme.Accent, style | CellStyle.Bold, linkId));
     }
 
     /// <summary>Renders sub/superscript emphasis (~x~ / ^x^) by converting the inner text to Unicode

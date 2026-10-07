@@ -71,7 +71,7 @@ public sealed partial class MarkdownTerminalRenderer
         }
 
         string pad = new(' ', indent);
-        EmitBorder(pad, widths, '┌', '┬', '┐');
+        EmitBorder(pad, widths, Glyphs.BoxTL, Glyphs.BoxTM, Glyphs.BoxTR);
         for (int i = 0; i < styleRows.Count; i++)
         {
             // Pipe tables mark their first row as the header; grid tables flag header rows explicitly
@@ -83,9 +83,9 @@ public sealed partial class MarkdownTerminalRenderer
             // A rule under the header block, and between body rows that contain multi-line content
             // (block cells read badly when rows run together).
             if ((header && !headerRows[i + 1]) || (!header && (HasBlockContent(styleRows[i]) || HasBlockContent(styleRows[i + 1]))))
-                EmitBorder(pad, widths, '├', '┼', '┤');
+                EmitBorder(pad, widths, Glyphs.BoxML, Glyphs.BoxMM, Glyphs.BoxMR);
         }
-        EmitBorder(pad, widths, '└', '┴', '┘');
+        EmitBorder(pad, widths, Glyphs.BoxBL, Glyphs.BoxBM, Glyphs.BoxBR);
         AddBlank();
     }
 
@@ -108,7 +108,7 @@ public sealed partial class MarkdownTerminalRenderer
 
         string pad = new(' ', indent);
         var rule = new DisplayLine();
-        rule.Spans.Add(new StyledSpan(pad + new string('─', Math.Max(8, _width - indent - 1)), Theme.Rule));
+        rule.Spans.Add(new StyledSpan(pad + new string(Glyphs.Rule, Math.Max(8, _width - indent - 1)), Theme.Rule));
         _lines.Add(rule);
         for (int i = 0; i < styleRows.Count; i++)
         {
@@ -121,10 +121,10 @@ public sealed partial class MarkdownTerminalRenderer
                 var label = TextWidth.TrimToWidth(labels[c], labelWidth);
                 // The "label │ " is a hanging gutter: wrapped values align under the first line's value.
                 EmitWrapped(new List<StyledSpan>(cell), indent + labelWidth + 3, gutterColor: Theme.Heading,
-                    gutter: label.PadRight(labelWidth) + " │ ", repeatGutter: false);
+                    gutter: label.PadRight(labelWidth) + " " + Glyphs.BoxV + " ", repeatGutter: false);
             }
             var sep = new DisplayLine();
-            sep.Spans.Add(new StyledSpan(pad + new string('─', Math.Max(8, _width - indent - 1)), Theme.Rule));
+            sep.Spans.Add(new StyledSpan(pad + new string(Glyphs.Rule, Math.Max(8, _width - indent - 1)), Theme.Rule));
             _lines.Add(sep);
         }
         AddBlank();
@@ -153,7 +153,7 @@ public sealed partial class MarkdownTerminalRenderer
                     foreach (var item in list.OfType<ListItemBlock>())
                     {
                         Sep();
-                        spans.Add(new StyledSpan(prefix + (list.IsOrdered ? $"{n++}. " : "• "), Theme.Accent));
+                        spans.Add(new StyledSpan(prefix + (list.IsOrdered ? $"{n++}. " : Glyphs.Bullet1), Theme.Accent));
                         bool first = true;
                         foreach (var child in item)
                         {
@@ -196,7 +196,7 @@ public sealed partial class MarkdownTerminalRenderer
         sb.Append(pad).Append(left);
         for (int c = 0; c < widths.Length; c++)
         {
-            sb.Append(new string('─', widths[c] + 2));
+            sb.Append(new string(Glyphs.BoxH, widths[c] + 2));
             sb.Append(c == widths.Length - 1 ? right : mid);
         }
         line.Spans.Add(new StyledSpan(sb.ToString(), Theme.Rule));
@@ -224,7 +224,7 @@ public sealed partial class MarkdownTerminalRenderer
         for (int lineIdx = 0; lineIdx < maxLines; lineIdx++)
         {
             var line = new DisplayLine();
-            line.Spans.Add(new StyledSpan(pad + "│ ", Theme.Rule));
+            line.Spans.Add(new StyledSpan(pad + Glyphs.BoxV + " ", Theme.Rule));
             for (int c = 0; c < widths.Length; c++)
             {
                 var cellLines = wrappedCells[c];
@@ -246,7 +246,7 @@ public sealed partial class MarkdownTerminalRenderer
                 if (rightPad > 0) line.Spans.Add(new StyledSpan(new string(' ', rightPad)));
                 // No trailing space after the last column's rule (keeps the row exactly as wide as
                 // the border rows and avoids a stray cell when copying).
-                line.Spans.Add(new StyledSpan(c == widths.Length - 1 ? " │" : " │ ", Theme.Rule));
+                line.Spans.Add(new StyledSpan(c == widths.Length - 1 ? " " + Glyphs.BoxV : " " + Glyphs.BoxV + " ", Theme.Rule));
             }
             _lines.Add(line);
         }

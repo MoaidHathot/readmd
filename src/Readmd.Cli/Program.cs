@@ -56,9 +56,18 @@ var rootOption = new Option<string?>("--root")
 };
 var colorOption = new Option<string?>("--color")
 {
-    Description = "ANSI colour for --print/piped output: auto (default: colour only when stdout is a terminal, honouring NO_COLOR/FORCE_COLOR), always (e.g. for `| less -R`), or never.",
+    Description = "Colour depth: auto (default: detect; honours NO_COLOR/FORCE_COLOR), always/truecolor, 256, 16, or never. For --print, 'always' forces ANSI even when piped (e.g. `| less -R`).",
 };
-colorOption.AcceptOnlyFromAmong("auto", "always", "never");
+colorOption.AcceptOnlyFromAmong("auto", "always", "never", "truecolor", "256", "16");
+var graphicsOption = new Option<string?>("--graphics", ["-g"])
+{
+    Description = "Inline image protocol: auto (default: detect via terminal queries), sixel, kitty, iterm2, half-block, or none.",
+};
+graphicsOption.AcceptOnlyFromAmong("auto", "sixel", "kitty", "iterm2", "half-block", "none");
+var asciiOption = new Option<bool>("--ascii")
+{
+    Description = "Use plain ASCII glyphs instead of box drawing and symbols (for fonts/terminals without them, or clean piped text).",
+};
 var widthOption = new Option<int?>("--width", ["-w"])
 {
     Description = "Maximum reading width in columns (content is centred when the terminal is wider); also the wrap width for --print. Default: full width (config: maxWidth).",
@@ -83,6 +92,8 @@ var root = new RootCommand("readmd — a terminal-first Markdown viewer with liv
     rootOption,
     colorOption,
     widthOption,
+    graphicsOption,
+    asciiOption,
 };
 
 // Replace the built-in --version (which prints the bare version) with a branded one that
@@ -144,6 +155,8 @@ root.SetAction(async (parse, ct) =>
     var rootArg = parse.GetValue(rootOption);
     var colorArg = parse.GetValue(colorOption);
     var widthArg = parse.GetValue(widthOption);
+    var graphicsArg = parse.GetValue(graphicsOption);
+    var asciiArg = parse.GetValue(asciiOption);
 
     var fromStdin = file == "-";
     string full;
@@ -182,6 +195,9 @@ root.SetAction(async (parse, ct) =>
     if (ConfigLoader.LastError is { } configError)
         Console.Error.WriteLine($"readmd: warning — config ignored: {configError}");
     Timing.Mark("config loaded");
+    // Global rendering switches (glyph set, East Asian width policy) apply to every output path.
+    Readmd.Terminal.Glyphs.Ascii = asciiArg || (config.Ascii ?? false) || Environment.GetEnvironmentVariable("READMD_ASCII") is "1" or "true";
+    Readmd.Terminal.TextWidthSettings.AmbiguousWide = config.AmbiguousWide ?? false;
     var themeStr = themeArg ?? config.Theme ?? "auto";
     var backgroundStr = backgroundArg ?? config.Background ?? "terminal";
     var d2Path = d2PathArg ?? config.D2Path;
@@ -216,12 +232,22 @@ root.SetAction(async (parse, ct) =>
     var solidBackground = backgroundStr.Trim().ToLowerInvariant() is "solid" or "opaque" or "on";
     var diagramTheme = dark ? DiagramTheme.Dark : DiagramTheme.Light;
     var keyMap = Readmd.Terminal.KeyMap.FromConfig(config.Keys);
-    var graphicsMode = Readmd.Terminal.TerminalCapabilities.Resolve(config.Graphics);
+    var graphicsChoice = graphicsArg is null or "auto" ? config.Graphics : graphicsArg;
+    var graphicsMode = Readmd.Terminal.TerminalCapabilities.Resolve(graphicsChoice);
+    var graphicsAuto = Readmd.Terminal.TerminalCapabilities.IsAuto(graphicsChoice);
+    var colorMode = Readmd.Terminal.TerminalCapabilities.ResolveColors(colorArg ?? config.Color);
     var layout = new LayoutSettings(
         MaxWidth: Math.Max(0, widthArg ?? config.MaxWidth ?? 0),
         LineNumbers: config.LineNumbers ?? true,
         TabSize: Math.Clamp(config.TabSize ?? 4, 1, 16),
         SmartPunctuation: config.SmartPunctuation ?? false);
+    var viewerPrefs = new ViewerPrefs(
+        ThemeAuto: themeStr.Equals("auto", StringComparison.OrdinalIgnoreCase) && customTheme is null,
+        GraphicsAuto: graphicsAuto,
+        Colors: colorMode,
+        Hyperlinks: config.Hyperlinks ?? true,
+        WheelLines: Math.Clamp(config.WheelLines ?? 3, 1, 20),
+        ConfirmExternalLinks: config.ConfirmExternalLinks ?? true);
     if (widthArg is < 20)
     {
         Console.Error.WriteLine("readmd: --width must be at least 20 columns.");
@@ -253,13 +279,14 @@ root.SetAction(async (parse, ct) =>
         }
         if (shouldPrint)
         {
-            return await RunPrintAsync(full, fromStdin, dark, ResolveColor(colorArg), layout, ct);
+            var printColors = colorMode == Readmd.Terminal.ColorMode.None ? Readmd.Terminal.ColorMode.TrueColor : colorMode;
+            return await RunPrintAsync(full, fromStdin, dark, ResolveColor(colorArg ?? config.Color), layout, printColors, viewerPrefs.Hyperlinks, ct);
         }
         if (browser)
         {
             return await RunBrowserAsync(full, port, noOpen, diagramTheme, GetDiagrams(), ct);
         }
-        return await RunTerminalAsync(full, dark, diagramTheme, GetDiagrams(), port, solidBackground, customTheme, keyMap, graphicsMode, rootDir, layout, ct);
+        return await RunTerminalAsync(full, dark, diagramTheme, GetDiagrams(), port, solidBackground, customTheme, keyMap, graphicsMode, rootDir, layout, viewerPrefs, ct);
     }
     catch (OperationCanceledException)
     {
@@ -303,7 +330,7 @@ static bool ResolveColor(string? colorArg)
 {
     switch (colorArg?.ToLowerInvariant())
     {
-        case "always": return true;
+        case "always" or "truecolor" or "256" or "16": return true;
         case "never": return false;
     }
     if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NO_COLOR"))) return false;
@@ -389,7 +416,7 @@ static async Task<int> RunExportAsync(string full, bool fromStdin, string export
 }
 
 // --print / non-TTY: render to stdout (ANSI when stdout is a terminal, plain text otherwise).
-static async Task<int> RunPrintAsync(string full, bool fromStdin, bool dark, bool color, LayoutSettings layout, CancellationToken ct)
+static async Task<int> RunPrintAsync(string full, bool fromStdin, bool dark, bool color, LayoutSettings layout, Readmd.Terminal.ColorMode colors, bool hyperlinks, CancellationToken ct)
 {
     var markdown = await ReadInputAsync(full, fromStdin, ct);
     Timing.Mark("file read");
@@ -398,7 +425,8 @@ static async Task<int> RunPrintAsync(string full, bool fromStdin, bool dark, boo
     if (color && (markdown.Contains("```") || markdown.Contains("~~~"))) _ = CodeHighlighter.WarmUpAsync(dark);
     var width = !Console.IsOutputRedirected && Console.WindowWidth > 0 ? Console.WindowWidth : 100;
     if (layout.MaxWidth > 0) width = Math.Min(width, layout.MaxWidth + 1);
-    var text = DocumentTextRenderer.Render(markdown, dark, width, color, new DocumentTextRenderer.Options(layout.LineNumbers, layout.TabSize, layout.SmartPunctuation));
+    var text = DocumentTextRenderer.Render(markdown, dark, width, color,
+        new DocumentTextRenderer.Options(layout.LineNumbers, layout.TabSize, layout.SmartPunctuation, colors, hyperlinks));
     Timing.Mark("rendered");
     // Write UTF-8 bytes straight to the raw stdout stream so box-drawing/Unicode survives a
     // redirected pipe or file regardless of the console's default code page.
@@ -432,7 +460,7 @@ static async Task<int> RunBrowserAsync(string file, int port, bool noOpen, Diagr
     return 0;
 }
 
-static async Task<int> RunTerminalAsync(string file, bool dark, DiagramTheme theme, IDiagramRenderer diagrams, int port, bool solidBackground, Readmd.Terminal.TerminalTheme? customTheme, Readmd.Terminal.KeyMap keyMap, Readmd.Terminal.GraphicsMode graphicsMode, string? rootDir, LayoutSettings layout, CancellationToken ct)
+static async Task<int> RunTerminalAsync(string file, bool dark, DiagramTheme theme, IDiagramRenderer diagrams, int port, bool solidBackground, Readmd.Terminal.TerminalTheme? customTheme, Readmd.Terminal.KeyMap keyMap, Readmd.Terminal.GraphicsMode graphicsMode, string? rootDir, LayoutSettings layout, ViewerPrefs prefs, CancellationToken ct)
 {
     // One-off browser server spun up by the viewer's 'o' action; tracked so we can dispose it.
     WebViewerServer? sideServer = null;
@@ -445,6 +473,12 @@ static async Task<int> RunTerminalAsync(string file, bool dark, DiagramTheme the
         LineNumbers = layout.LineNumbers,
         TabSize = layout.TabSize,
         SmartPunctuation = layout.SmartPunctuation,
+        ThemeAuto = prefs.ThemeAuto,
+        GraphicsAuto = prefs.GraphicsAuto,
+        Colors = prefs.Colors,
+        Hyperlinks = prefs.Hyperlinks,
+        WheelLines = prefs.WheelLines,
+        ConfirmExternalLinks = prefs.ConfirmExternalLinks,
         DiagramTheme = theme,
         SolidBackground = solidBackground,
         Theme = customTheme,
@@ -494,3 +528,6 @@ internal sealed class PrintVersionAction(string version) : SynchronousCommandLin
 
 /// <summary>Layout settings resolved from flags + config, shared by the terminal and print paths.</summary>
 internal sealed record LayoutSettings(int MaxWidth, bool LineNumbers, int TabSize, bool SmartPunctuation);
+
+/// <summary>Interactive-viewer preferences resolved from flags + config.</summary>
+internal sealed record ViewerPrefs(bool ThemeAuto, bool GraphicsAuto, Readmd.Terminal.ColorMode Colors, bool Hyperlinks, int WheelLines, bool ConfirmExternalLinks);

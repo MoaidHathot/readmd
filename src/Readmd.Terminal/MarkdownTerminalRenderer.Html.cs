@@ -255,7 +255,7 @@ public sealed partial class MarkdownTerminalRenderer
                     var src = tok.Attr("src");
                     if (string.IsNullOrEmpty(src)) return;
                     if (_inPicture) { _paraImages.Add((PickPictureSource(src), tok.Attr("alt") ?? "", r._html.CurrentLink is { } l ? r._links[l].Url : null)); _inPicture = false; _pictureSources.Clear(); return; }
-                    if (_cell is not null) { r.Leaf(_cell, $"🖼 {tok.Attr("alt") ?? ""}".TrimEnd(), Theme.Muted, CellStyle.Italic, null); return; }
+                    if (_cell is not null) { r.Leaf(_cell, $"{Glyphs.ImagePlaceholder} {tok.Attr("alt") ?? ""}".TrimEnd(), Theme.Muted, CellStyle.Italic, null); return; }
                     _paraImages.Add((src, tok.Attr("alt") ?? "", r._html.CurrentLink is { } lk ? r._links[lk].Url : null));
                     return;
                 }
@@ -269,7 +269,7 @@ public sealed partial class MarkdownTerminalRenderer
                 case "p" or "div" or "section" or "article" or "header" or "footer" or "main" or "nav" or "figure" or "figcaption" or "dl" or "dd" or "dt" or "address":
                     FlushParagraph();
                     ApplyAlign(tok);
-                    if (tok.Name == "figcaption") _para.Add(new StyledSpan("— ", Theme.Muted));
+                    if (tok.Name == "figcaption") _para.Add(new StyledSpan(Glyphs.Caption, Theme.Muted));
                     return;
                 case "center":
                     FlushParagraph(); _center = true; return;
@@ -436,14 +436,14 @@ public sealed partial class MarkdownTerminalRenderer
 
         private static string BulletFor(int depth)
         {
-            string[] bullets = { "• ", "◦ ", "▪ " };
+            string[] bullets = { Glyphs.Bullet1, Glyphs.Bullet2, Glyphs.Bullet3 };
             return bullets[depth % bullets.Length];
         }
 
         private void EmitSummary()
         {
             r.EnsureBlankBefore();
-            var spans = new List<StyledSpan> { new("▾ ", Theme.Accent, CellStyle.Bold) };
+            var spans = new List<StyledSpan> { new(Glyphs.DetailsOpen, Theme.Accent, CellStyle.Bold) };
             if (_summary.Count == 0) spans.Add(new StyledSpan("Details", Theme.Accent, CellStyle.Bold));
             else spans.AddRange(_summary);
             int headerLine = r._lines.Count;
@@ -478,7 +478,7 @@ public sealed partial class MarkdownTerminalRenderer
                 indent = Indent - 2 + TextWidth.Of(_pendingMarker) ; // marker occupies the list indent
                 indent = Math.Max(indent, baseIndent + _quoteDepth * 2 + (_lists.Count - 1) * 2 + TextWidth.Of(_pendingMarker));
             }
-            else if (_quoteDepth > 0) { gutter = "▌ "; gutterColor = Theme.Rule; }
+            else if (_quoteDepth > 0) { gutter = Glyphs.QuoteBar; gutterColor = Theme.Rule; }
 
             if (hasText)
             {

@@ -100,30 +100,30 @@ public sealed partial class TerminalViewer
         {
             int r = boxTop + i;
             if (r >= _screen.Height) break;
-            _screen.MoveTo(r, boxLeft + boxW).SetBackground(backdrop).SetForeground(shadow).Write("░");
+            _screen.MoveTo(r, boxLeft + boxW).SetBackground(backdrop).SetForeground(shadow).Write(Glyphs.Shadow.ToString());
         }
         int sb = boxTop + boxH;
         if (sb < _screen.Height)
         {
-            _screen.MoveTo(sb, boxLeft + 1).SetBackground(backdrop).SetForeground(shadow).Write(new string('░', inner + 1));
+            _screen.MoveTo(sb, boxLeft + 1).SetBackground(backdrop).SetForeground(shadow).Write(new string(Glyphs.Shadow, inner + 1));
         }
 
         // --- card body: rounded corners, vertical edges, filled interior ---
         _screen.SetBackground(_scrimBgCache).SetForeground(p.Border);
-        _screen.MoveTo(boxTop, boxLeft).Write("╭");
-        _screen.SetForeground(p.Border).Write(new string('─', inner));
-        _screen.Write("╮");
+        _screen.MoveTo(boxTop, boxLeft).Write(Glyphs.CornerTL);
+        _screen.SetForeground(p.Border).Write(new string(Glyphs.Rule, inner));
+        _screen.Write(Glyphs.CornerTR);
 
         for (int i = 1; i < boxH - 1; i++)
         {
             int r = boxTop + i;
-            _screen.MoveTo(r, boxLeft).SetBackground(_scrimBgCache).SetForeground(p.Border).Write("│");
+            _screen.MoveTo(r, boxLeft).SetBackground(_scrimBgCache).SetForeground(p.Border).Write(Glyphs.BoxV.ToString());
             _screen.SetBackground(p.Panel).Write(new string(' ', inner));
-            _screen.SetBackground(_scrimBgCache).SetForeground(p.Border).Write("│");
+            _screen.SetBackground(_scrimBgCache).SetForeground(p.Border).Write(Glyphs.BoxV.ToString());
         }
 
         _screen.MoveTo(boxTop + boxH - 1, boxLeft).SetBackground(_scrimBgCache).SetForeground(p.Border);
-        _screen.Write("╰" + new string('─', inner) + "╯");
+        _screen.Write(Glyphs.CornerBL + new string(Glyphs.Rule, inner) + Glyphs.CornerBR);
 
         return (boxTop + 1, boxLeft + 1, inner, boxH - 2);
     }
@@ -141,11 +141,11 @@ public sealed partial class TerminalViewer
         int tw = TextWidth.Of(ttl);
         if (tw < cW) _screen.Write(new string(' ', cW - tw));
 
-        _screen.MoveTo(cTop + 1, cLeft).SetBackground(p.Panel).SetForeground(p.Border).Write(new string('─', cW));
+        _screen.MoveTo(cTop + 1, cLeft).SetBackground(p.Panel).SetForeground(p.Border).Write(new string(Glyphs.Rule, cW));
 
         int divRow = cTop + cH - 2;
         int footRow = cTop + cH - 1;
-        _screen.MoveTo(divRow, cLeft).SetBackground(p.Panel).SetForeground(p.Border).Write(new string('─', cW));
+        _screen.MoveTo(divRow, cLeft).SetBackground(p.Panel).SetForeground(p.Border).Write(new string(Glyphs.Rule, cW));
         _screen.MoveTo(footRow, cLeft).SetBackground(p.Panel).Write(new string(' ', cW));
         if (!string.IsNullOrEmpty(footer))
         {
@@ -339,7 +339,7 @@ public sealed partial class TerminalViewer
         // Filter row under the header divider.
         int filterRow = cTop + 2;
         _screen.MoveTo(filterRow, cLeft).SetBackground(p.Panel).SetForeground(_tocFilter.Length == 0 ? p.Muted : p.Fg);
-        string filterText = TextWidth.TrimToWidth(" " + (_tocFilter.Length == 0 ? "filter…" : "/" + _tocFilter + "▏"), cW);
+        string filterText = TextWidth.TrimToWidth(" " + (_tocFilter.Length == 0 ? "filter" + Glyphs.Ellipsis : "/" + _tocFilter + Glyphs.Cursor), cW);
         _screen.Write(filterText);
         int fw = TextWidth.Of(filterText);
         if (fw < cW) _screen.Write(new string(' ', cW - fw));
@@ -372,7 +372,7 @@ public sealed partial class TerminalViewer
             bool current = idx == currentSection;
             var bg = sel ? p.SelBg : (current ? p.PanelAlt : p.Panel);
             _screen.SetBackground(bg);
-            _screen.SetForeground(sel ? p.SelFg : p.Accent).Write(sel ? "▌" : (current ? "›" : " "));
+            _screen.SetForeground(sel ? p.SelFg : p.Accent).Write(sel ? Glyphs.Selected : (current ? Glyphs.Current : " "));
 
             var indent = new string(' ', (entry.Level - 1) * 2);
             string label = " " + indent + entry.Title;

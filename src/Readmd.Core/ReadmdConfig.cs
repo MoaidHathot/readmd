@@ -44,6 +44,24 @@ public sealed class ReadmdConfig
     /// <summary>Typographic replacements: smart quotes, dashes and ellipses (default false).</summary>
     [JsonPropertyName("smartPunctuation")] public bool? SmartPunctuation { get; set; }
 
+    /// <summary>Colour depth: "auto", "always"/"truecolor", "256", "16", or "never".</summary>
+    [JsonPropertyName("color")] public string? Color { get; set; }
+
+    /// <summary>Emit OSC 8 hyperlinks for links (default true).</summary>
+    [JsonPropertyName("hyperlinks")] public bool? Hyperlinks { get; set; }
+
+    /// <summary>Lines scrolled per mouse-wheel notch (default 3).</summary>
+    [JsonPropertyName("wheelLines")] public int? WheelLines { get; set; }
+
+    /// <summary>Ask before opening external links (default true; Ctrl+click always skips the prompt).</summary>
+    [JsonPropertyName("confirmExternalLinks")] public bool? ConfirmExternalLinks { get; set; }
+
+    /// <summary>Use plain ASCII glyphs instead of box drawing / symbols (default false).</summary>
+    [JsonPropertyName("ascii")] public bool? Ascii { get; set; }
+
+    /// <summary>Treat East Asian Ambiguous characters as wide, as CJK-locale terminals do (default false).</summary>
+    [JsonPropertyName("ambiguousWide")] public bool? AmbiguousWide { get; set; }
+
     /// <summary>Named custom color themes that can be selected via <see cref="Theme"/>.</summary>
     [JsonPropertyName("themes")] public Dictionary<string, ColorTheme>? Themes { get; set; }
 
@@ -84,6 +102,12 @@ public sealed class ReadmdConfig
             LineNumbers = overrides.LineNumbers ?? LineNumbers,
             TabSize = overrides.TabSize ?? TabSize,
             SmartPunctuation = overrides.SmartPunctuation ?? SmartPunctuation,
+            Color = overrides.Color ?? Color,
+            Hyperlinks = overrides.Hyperlinks ?? Hyperlinks,
+            WheelLines = overrides.WheelLines ?? WheelLines,
+            ConfirmExternalLinks = overrides.ConfirmExternalLinks ?? ConfirmExternalLinks,
+            Ascii = overrides.Ascii ?? Ascii,
+            AmbiguousWide = overrides.AmbiguousWide ?? AmbiguousWide,
             Themes = MergeDict(Themes, overrides.Themes),
             Keys = MergeDict(Keys, overrides.Keys),
         };

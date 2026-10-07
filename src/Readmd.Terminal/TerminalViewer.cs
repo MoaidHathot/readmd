@@ -43,6 +43,21 @@ public sealed class TerminalViewerOptions
     /// <summary>Ask before opening external (http/mailto) links; Ctrl+click always skips the prompt.</summary>
     public bool ConfirmExternalLinks { get; init; } = true;
 
+    /// <summary>The graphics mode was auto-detected (so terminal probe replies may upgrade it).</summary>
+    public bool GraphicsAuto { get; init; }
+
+    /// <summary>The theme was "auto" (so the terminal's reported background colour may pick dark/light).</summary>
+    public bool ThemeAuto { get; init; }
+
+    /// <summary>Colour depth for SGR output.</summary>
+    public ColorMode Colors { get; init; } = ColorMode.TrueColor;
+
+    /// <summary>Emit OSC 8 hyperlinks for links.</summary>
+    public bool Hyperlinks { get; init; } = true;
+
+    /// <summary>Lines scrolled per mouse-wheel notch.</summary>
+    public int WheelLines { get; init; } = 3;
+
     /// <summary>Test harness: highlight code on the calling thread so frames are deterministic.</summary>
     internal bool SynchronousHighlighting { get; init; }
 }
@@ -181,7 +196,8 @@ public sealed partial class TerminalViewer : IAsyncDisposable
 
     public async Task RunAsync()
     {
-        _screen = new AnsiScreen();
+        _screen = new AnsiScreen { Colors = _options.Colors, Hyperlinks = _options.Hyperlinks };
+        _wheelLines = Math.Max(1, _options.WheelLines);
         try
         {
             // Paint a minimal frame immediately so the terminal doesn't sit on a blank alternate
@@ -386,7 +402,7 @@ public sealed partial class TerminalViewer : IAsyncDisposable
         var line = new DisplayLine { FoldPlaceholder = region.Id, BlockId = region.HeaderLine < _allLines.Count ? _allLines[region.HeaderLine].BlockId : 0 };
         int indent = region.IsHeading ? 2 : 4;
         line.Spans.Add(new StyledSpan(new string(' ', indent)));
-        line.Spans.Add(new StyledSpan("⋯ ", _theme.Accent));
+        line.Spans.Add(new StyledSpan(Glyphs.Fold, _theme.Accent));
         line.Spans.Add(new StyledSpan($"{count} line{(count == 1 ? "" : "s")} folded", _theme.Muted, CellStyle.Italic));
         line.Spans.Add(new StyledSpan("  (za / Enter to expand)", _theme.Muted, CellStyle.Dim));
         return line;
