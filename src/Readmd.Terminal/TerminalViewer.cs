@@ -153,6 +153,9 @@ public sealed partial class TerminalViewer : IAsyncDisposable
         _screen = new AnsiScreen();
         try
         {
+            // Paint a minimal frame immediately so the terminal doesn't sit on a blank alternate
+            // screen while the first parse/layout runs (large documents can take a moment).
+            DrawLoadingFrame();
             await LoadAsync(_currentPath, pushHistory: true);
             SetStatus("press ? for help · numbered links: press 1-9 · Enter opens the first link", 5);
             RenderLoop();
@@ -163,6 +166,19 @@ public sealed partial class TerminalViewer : IAsyncDisposable
             AnsiScreen.RestoreInputMode();
         }
         await Task.CompletedTask;
+    }
+
+    private void DrawLoadingFrame()
+    {
+        try
+        {
+            _screen.BeginFrame();
+            if (_solidBackground) _screen.FillBackground(_theme.Background, _screen.Height, _screen.Width);
+            _screen.MoveTo(0, 0).SetForeground(_theme.Muted).Write("Loading " + Path.GetFileName(_currentPath) + "…");
+            _screen.Reset();
+            _screen.Flush();
+        }
+        catch { /* purely cosmetic */ }
     }
 
     // ---------------- loading & layout ----------------
@@ -177,14 +193,8 @@ public sealed partial class TerminalViewer : IAsyncDisposable
         lock (_stateLock)
         {
             _currentPath = path;
-            _lines = parsed.Lines;
-            _links = parsed.Links;
-            _anchors = parsed.Anchors;
-            _toc = parsed.Toc;
-            _title = parsed.Title;
-            _pendingDiagrams = parsed.Diagrams;
-            _pendingImages = parsed.Images;
-            _pendingImageGroups = parsed.ImageGroups;
+            _currentMarkdown = markdown;
+            ApplyParsed(parsed);
             _diagramRequested.Clear();
             // keep cached diagram results across reloads (cache is keyed by content hash)
             _scroll = Math.Min(_scroll, Math.Max(0, _lines.Count - 1));
@@ -201,6 +211,122 @@ public sealed partial class TerminalViewer : IAsyncDisposable
 
         _watcher.Retarget(path);
         KickoffDiagramRenders();
+        KickoffHighlights(parsed.PendingHighlights);
+        // The layout changed under any active search: re-run it against the new lines (without
+        // jumping the viewport) so highlights don't point at stale line indices.
+        if (_searchQuery.Length > 0) RecomputeSearch(jumpToFirst: false);
+    }
+
+    /// <summary>Installs a freshly parsed document (lines, links, anchors, TOC, pending media). Caller holds the state lock.</summary>
+    private void ApplyParsed(ParsedDoc parsed)
+    {
+        _lines = parsed.Lines;
+        _links = parsed.Links;
+        _anchors = parsed.Anchors;
+        _toc = parsed.Toc;
+        _title = parsed.Title;
+        _pendingDiagrams = parsed.Diagrams;
+        _pendingImages = parsed.Images;
+        _pendingImageGroups = parsed.ImageGroups;
+        _tocIndex = Math.Clamp(_tocIndex, 0, Math.Max(0, _toc.Count - 1));
+    }
+
+    /// <summary>
+    /// Re-lays out the current document from the in-memory source (no disk read) — used after a
+    /// resize, theme change or explicit refresh — and re-reserves rows for every already-rendered
+    /// diagram/image so the layout stays intact. Preserves the scroll position. Caller holds the lock.
+    /// </summary>
+    private void Relayout()
+    {
+        int savedScroll = _scroll;
+        ParsedDoc? parsed = null;
+        try
+        {
+            parsed = ParseToLines(_currentPath, _currentMarkdown);
+            ApplyParsed(parsed);
+        }
+        catch { /* keep old layout */ }
+
+        foreach (var (key, result) in _diagramResults)
+            if (result.Status == DiagramStatus.Ready)
+                ReserveDiagramRows(key, result, adjustScroll: false);
+
+        _scroll = Math.Clamp(savedScroll, 0, Math.Max(0, _lines.Count - 1));
+        _dirty = true;
+        if (parsed is not null) KickoffHighlights(parsed.PendingHighlights);
+    }
+
+    private string _currentMarkdown = "";
+
+    // ---------------- background syntax highlighting ----------------
+    // Code blocks are painted in plain colour on first layout; a single worker highlights them in
+    // the background (TextMate grammar compilation is the slowest part of rendering a document) and
+    // restyles the lines in place, nearest-to-viewport first. Results are cached, so reloads, theme
+    // toggles and resizes of unchanged blocks are instant.
+    private readonly object _highlightGate = new();
+    private readonly Queue<(MarkdownTerminalRenderer.PendingHighlight Pending, List<DisplayLine> Lines, TerminalTheme Theme, int Width)> _highlightQueue = new();
+    private bool _highlightWorkerRunning;
+
+    private void KickoffHighlights(IReadOnlyList<MarkdownTerminalRenderer.PendingHighlight> pending)
+    {
+        if (pending.Count == 0) return;
+        List<(MarkdownTerminalRenderer.PendingHighlight, List<DisplayLine>, TerminalTheme, int)> items;
+        lock (_stateLock)
+        {
+            // Capture the concrete DisplayLine objects now: even if the layout is replaced before the
+            // worker gets to them, restyling the old objects is harmless and the result is cached.
+            var byBlock = new Dictionary<int, List<DisplayLine>>();
+            var firstIndex = new Dictionary<int, int>();
+            for (int i = 0; i < _lines.Count; i++)
+            {
+                int id = _lines[i].BlockId;
+                if (id == 0) continue;
+                if (!byBlock.TryGetValue(id, out var list)) { byBlock[id] = list = []; firstIndex[id] = i; }
+                list.Add(_lines[i]);
+            }
+            int scroll = _scroll;
+            int width = _screen.Width - 1;
+            items = pending
+                .Where(p => byBlock.ContainsKey(p.BlockId))
+                .OrderBy(p => Math.Abs(firstIndex[p.BlockId] - scroll))
+                .Select(p => (p, byBlock[p.BlockId], _theme, width))
+                .ToList();
+        }
+
+        lock (_highlightGate)
+        {
+            foreach (var item in items) _highlightQueue.Enqueue(item);
+            if (_highlightWorkerRunning) return;
+            _highlightWorkerRunning = true;
+        }
+        _ = Task.Run(HighlightWorker);
+    }
+
+    private void HighlightWorker()
+    {
+        while (true)
+        {
+            (MarkdownTerminalRenderer.PendingHighlight Pending, List<DisplayLine> Lines, TerminalTheme Theme, int Width) item;
+            lock (_highlightGate)
+            {
+                if (_highlightQueue.Count == 0 || _lifetimeCts.IsCancellationRequested)
+                {
+                    _highlightWorkerRunning = false;
+                    return;
+                }
+                item = _highlightQueue.Dequeue();
+            }
+            try
+            {
+                var highlighted = CodeHighlighter.Highlight(item.Pending.Code, item.Pending.Language, item.Theme);
+                lock (_stateLock)
+                {
+                    MarkdownTerminalRenderer.ApplyHighlight(item.Lines, item.Pending, highlighted, item.Theme, item.Width);
+                    _dirty = true;
+                }
+            }
+            catch { /* leave the block plain */ }
+        }
     }
 
     private sealed record ParsedDoc(
@@ -211,17 +337,20 @@ public sealed partial class TerminalViewer : IAsyncDisposable
         string Title,
         IReadOnlyDictionary<string, DiagramRequest> Diagrams,
         IReadOnlyDictionary<string, string> Images,
-        IReadOnlyDictionary<string, List<string>> ImageGroups);
+        IReadOnlyDictionary<string, List<string>> ImageGroups,
+        IReadOnlyList<MarkdownTerminalRenderer.PendingHighlight> PendingHighlights);
 
     private ParsedDoc ParseToLines(string path, string markdown)
     {
         // Parse once with the shared terminal pipeline and derive TOC/title/front-matter from that
         // same AST — no second parse, and no HTML render that the terminal never displays.
-        var ast = Markdig.Markdown.Parse(markdown, TerminalPipeline.Instance);
+        var ast = Timing.Measure("parse", () => Markdig.Markdown.Parse(markdown, TerminalPipeline.Instance));
         var meta = MarkdownRenderer.ExtractMetadata(ast, path);
-        var renderer = new MarkdownTerminalRenderer(_theme, _screen.Width - 1);
-        var result = renderer.Render(ast, meta.Toc, meta.FrontMatter);
-        return new ParsedDoc(result.Lines, result.Links, result.Anchors, meta.Toc, meta.Title, renderer.PendingDiagrams, renderer.PendingImages, renderer.PendingImageGroups);
+        // Code is highlighted in the background (see KickoffHighlights) so the first paint is fast.
+        var renderer = new MarkdownTerminalRenderer(_theme, _screen.Width - 1) { DeferHighlighting = true };
+        var result = Timing.Measure("layout", () => renderer.Render(ast, meta.Toc, meta.FrontMatter));
+        return new ParsedDoc(result.Lines, result.Links, result.Anchors, meta.Toc, meta.Title, renderer.PendingDiagrams,
+            renderer.PendingImages, renderer.PendingImageGroups, renderer.PendingHighlights);
     }
 
     public async ValueTask DisposeAsync()

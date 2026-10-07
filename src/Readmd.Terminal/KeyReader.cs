@@ -1,12 +1,14 @@
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace Readmd.Terminal;
 
 /// <summary>
 /// Reliable cross-platform input reader. On Windows it uses the Win32 console input API
 /// (<c>ReadConsoleInputW</c>) directly — the dependable way to read individual key presses and
-/// mouse wheel events on Windows Terminal. On other platforms it falls back to
-/// <see cref="Console.ReadKey(bool)"/> (keys only).
+/// mouse wheel events on Windows Terminal. On other platforms it reads raw bytes from stdin (the
+/// terminal is put in raw mode via termios) and decodes VT key sequences, SGR mouse reports,
+/// bracketed paste, focus events and terminal replies (window/cell pixel size).
 /// </summary>
 internal static class KeyReader
 {
@@ -16,10 +18,20 @@ internal static class KeyReader
     /// </summary>
     public static (int WidthPx, int HeightPx)? WindowPixelSize { get; private set; }
 
-    /// <summary>Parses a swallowed CSI report; currently extracts the CSI 14t pixel-size reply.</summary>
-    private static void TryParseReport(string seq)
+    /// <summary>The terminal's cell pixel size, captured from a CSI 16t report (CSI 6;h;w t). Null until reported.</summary>
+    public static (int WidthPx, int HeightPx)? CellPixelSize { get; private set; }
+
+    /// <summary>
+    /// Raw terminal replies that aren't keys (DA1, XTVERSION, OSC colour replies, kitty graphics
+    /// responses, …). <see cref="TerminalProbe"/> consumes these to detect capabilities; the viewer
+    /// never sees them as keystrokes.
+    /// </summary>
+    public static event Action<string>? ReportReceived;
+
+    /// <summary>Parses a swallowed terminal report (CSI/OSC/DCS/APC reply) and records what it tells us.</summary>
+    internal static void TryParseReport(string seq)
     {
-        // seq is like "\x1b[4;<height>;<width>t"
+        // CSI 4 ; height ; width t  — window text-area size in pixels (reply to CSI 14 t).
         var m = System.Text.RegularExpressions.Regex.Match(seq, @"\[4;(\d+);(\d+)t");
         if (m.Success &&
             int.TryParse(m.Groups[1].Value, out int h) &&
@@ -28,6 +40,16 @@ internal static class KeyReader
         {
             WindowPixelSize = (w, h);
         }
+        // CSI 6 ; height ; width t  — cell size in pixels (reply to CSI 16 t).
+        var c = System.Text.RegularExpressions.Regex.Match(seq, @"\[6;(\d+);(\d+)t");
+        if (c.Success &&
+            int.TryParse(c.Groups[1].Value, out int ch) &&
+            int.TryParse(c.Groups[2].Value, out int cw) &&
+            cw > 0 && ch > 0)
+        {
+            CellPixelSize = (cw, ch);
+        }
+        ReportReceived?.Invoke(seq);
     }
 
     public static IEnumerable<KeyEvent> Read(Func<bool> isRunning)
@@ -45,8 +67,9 @@ internal static class KeyReader
     {
         var pending = new List<byte>(bytes);
         var result = new List<KeyEvent>();
+        var state = new PortableState();
         int consumed;
-        while (pending.Count > 0 && (consumed = TryParsePortable(pending, out var ev)) > 0)
+        while (pending.Count > 0 && (consumed = TryParsePortable(pending, state, out var ev, final: true)) > 0)
         {
             pending.RemoveRange(0, consumed);
             if (ev is not null) result.Add(ev);
@@ -58,11 +81,18 @@ internal static class KeyReader
     // Reads raw bytes from stdin (terminal in raw mode via termios) and parses VT escape
     // sequences for keys and SGR mouse reports (CSI < b ; x ; y M/m). This brings wheel scroll,
     // click-to-follow-link and drag-select to macOS/Linux, matching the Windows console reader.
+    private sealed class PortableState
+    {
+        public bool InPaste;
+        public readonly StringBuilder Paste = new();
+    }
+
     private static IEnumerable<KeyEvent> ReadPortable(Func<bool> isRunning)
     {
         var stdin = Console.OpenStandardInput();
-        var buf = new byte[256];
-        var pending = new List<byte>(16);
+        var buf = new byte[4096];
+        var pending = new List<byte>(64);
+        var state = new PortableState();
 
         while (isRunning())
         {
@@ -74,31 +104,55 @@ internal static class KeyReader
 
             for (var i = 0; i < n; i++) pending.Add(buf[i]);
 
-            // Drain complete tokens from the pending buffer.
+            // Drain complete tokens from the pending buffer. A lone ESC that ends a read is treated
+            // as the Escape key (a real sequence arrives in one read, or at least its '[' does).
             int consumed;
-            while ((consumed = TryParsePortable(pending, out var ev)) > 0)
+            while ((consumed = TryParsePortable(pending, state, out var ev, final: false)) > 0)
             {
                 pending.RemoveRange(0, consumed);
                 if (ev is not null) yield return ev;
+            }
+            if (pending.Count == 1 && pending[0] == 0x1b)
+            {
+                pending.Clear();
+                yield return new KeyEvent(KeyKind.Escape);
             }
         }
     }
 
     // Returns the number of bytes consumed (0 if it needs more input to decide), and the parsed
     // event (null when the bytes were a recognized-but-ignored sequence such as a CSI report).
-    private static int TryParsePortable(List<byte> b, out KeyEvent? ev)
+    private static int TryParsePortable(List<byte> b, PortableState state, out KeyEvent? ev, bool final)
     {
         ev = null;
         if (b.Count == 0) return 0;
-        byte c0 = b[0];
 
-        if (c0 != 0x1b) // not ESC: a plain key / control char / UTF-8 text byte
+        // Inside a bracketed paste: accumulate everything until the ESC [ 201 ~ terminator.
+        if (state.InPaste)
         {
-            return ParsePortableByte(b, out ev);
+            int end = IndexOf(b, PasteEnd);
+            if (end < 0)
+            {
+                // Keep a possible partial terminator at the tail; consume the rest as paste text.
+                int keep = Math.Min(b.Count, PasteEnd.Length - 1);
+                int take = b.Count - keep;
+                if (take <= 0) return 0;
+                state.Paste.Append(Encoding.UTF8.GetString(b.ToArray(), 0, take));
+                return take;
+            }
+            state.Paste.Append(Encoding.UTF8.GetString(b.ToArray(), 0, end));
+            state.InPaste = false;
+            ev = new KeyEvent(KeyKind.Paste, Text: state.Paste.ToString());
+            state.Paste.Clear();
+            return end + PasteEnd.Length;
         }
 
+        byte c0 = b[0];
+        if (c0 != 0x1b) // not ESC: a plain key / control char / UTF-8 text byte
+            return ParsePortableByte(b, out ev);
+
         // ESC alone (so far): could be a real Escape or the start of a sequence. Need ≥2 bytes.
-        if (b.Count == 1) return 0;
+        if (b.Count == 1) { if (final) { ev = new KeyEvent(KeyKind.Escape); return 1; } return 0; }
         byte c1 = b[1];
 
         if (c1 == '[' || c1 == 'O')
@@ -111,14 +165,57 @@ internal static class KeyReader
             }
             if (end < 0) return b.Count > 64 ? b.Count : 0; // wait for more, but cap runaway
 
-            var seq = System.Text.Encoding.ASCII.GetString(b.ToArray(), 1, end); // without the ESC
+            var seq = Encoding.ASCII.GetString(b.ToArray(), 1, end); // without the ESC
+            if (seq == "[200~") { state.InPaste = true; state.Paste.Clear(); return end + 1; }
             ev = ParseCsi(seq);
             return end + 1;
         }
 
-        // ESC followed by a normal char: treat the ESC as a standalone Escape key, leave the rest.
+        if (c1 == ']' || c1 == 'P' || c1 == '_' || c1 == '^')
+        {
+            // OSC (]) / DCS (P) / APC (_) / PM (^) reply: terminated by ST (ESC \) or BEL (OSC only).
+            for (var i = 2; i < b.Count; i++)
+            {
+                bool st = b[i] == 0x5c && b[i - 1] == 0x1b;
+                bool bel = c1 == ']' && b[i] == 0x07;
+                if (st || bel)
+                {
+                    TryParseReport(Encoding.UTF8.GetString(b.ToArray(), 1, i));
+                    return i + 1;
+                }
+            }
+            return b.Count > 4096 ? b.Count : 0;
+        }
+
+        // ESC followed by a normal byte in the same read: xterm "meta" encoding of Alt+key.
+        if (c1 >= 0x20 && c1 < 0x7f)
+        {
+            ev = new KeyEvent(KeyKind.Char, (char)c1, Alt: true);
+            return 2;
+        }
+        if (c1 is >= 1 and <= 26)   // Alt+Ctrl+letter
+        {
+            ev = new KeyEvent(KeyKind.Char, (char)('a' + (c1 - 1)), Ctrl: true, Alt: true);
+            return 2;
+        }
+
+        // ESC followed by something else: treat the ESC as a standalone Escape key, leave the rest.
         ev = new KeyEvent(KeyKind.Escape);
         return 1;
+    }
+
+    private static readonly byte[] PasteEnd = "\e[201~"u8.ToArray();
+
+    private static int IndexOf(List<byte> haystack, byte[] needle)
+    {
+        for (int i = 0; i + needle.Length <= haystack.Count; i++)
+        {
+            bool match = true;
+            for (int j = 0; j < needle.Length; j++)
+                if (haystack[i + j] != needle[j]) { match = false; break; }
+            if (match) return i;
+        }
+        return -1;
     }
 
     private static int ParsePortableByte(List<byte> b, out KeyEvent? ev)
@@ -131,6 +228,7 @@ internal static class KeyReader
             case 0x7f or 0x08: ev = new KeyEvent(KeyKind.Backspace); return 1;
             case 0x09: ev = new KeyEvent(KeyKind.Tab); return 1;
             case 0x03: ev = new KeyEvent(KeyKind.Char, 'c', Ctrl: true); return 1;  // Ctrl+C
+            case 0x00: ev = new KeyEvent(KeyKind.Char, ' ', Ctrl: true); return 1;  // Ctrl+Space
         }
         if (c is >= 1 and <= 26) // Ctrl+A..Z (excluding the ones handled above)
         {
@@ -145,13 +243,15 @@ internal static class KeyReader
         // Multi-byte UTF-8: gather the full code point.
         var len = c switch { >= 0xF0 => 4, >= 0xE0 => 3, _ => 2 };
         if (b.Count < len) return 0; // need more bytes
-        var s = System.Text.Encoding.UTF8.GetString(b.ToArray(), 0, len);
-        ev = s.Length > 0 ? new KeyEvent(KeyKind.Char, s[0]) : null;
+        var s = Encoding.UTF8.GetString(b.ToArray(), 0, len);
+        // Non-BMP characters (emoji) occupy two UTF-16 chars; the viewer only needs the first for
+        // key dispatch, and the full text is not meaningful as a command key anyway.
+        ev = s.Length > 0 ? new KeyEvent(KeyKind.Char, s[0], Text: s.Length > 1 ? s : null) : null;
         return len;
     }
 
-    // Parses a CSI/SS3 body (everything after the ESC), e.g. "[A", "[1;5C", "[<0;12;7M".
-    private static KeyEvent? ParseCsi(string seq)
+    // Parses a CSI/SS3 body (everything after the ESC), e.g. "[A", "[1;5C", "[<0;12;7M", "[4;500;900t".
+    internal static KeyEvent? ParseCsi(string seq)
     {
         // SGR mouse: "[<b;x;yM" (press/move) or "[<b;x;ym" (release).
         if (seq.Length > 2 && seq[0] == '[' && seq[1] == '<')
@@ -169,24 +269,54 @@ internal static class KeyReader
             return null;
         }
 
+        // Focus reporting (CSI I / CSI O).
+        if (seq == "[I") return new KeyEvent(KeyKind.FocusIn);
+        if (seq == "[O") return new KeyEvent(KeyKind.FocusOut);
+
+        // Terminal replies (window/cell pixel size, DA1 "[?…c", cursor position "[r;cR", …):
+        // record them and never surface them as keystrokes.
+        char last = seq[^1];
+        if (last == 't' || last == 'c' || last == 'R' || (seq.Length > 1 && seq[1] == '?') || last == 'y')
+        {
+            TryParseReport(seq);
+            return null;
+        }
+
         // Cursor/edit keys. Strip a leading '[' or 'O'.
         var s = seq.Length > 0 && (seq[0] == '[' || seq[0] == 'O') ? seq[1..] : seq;
-        // Some terminals send modifiers like "1;5C"; we only need the final letter for our keys.
         var key = s.Length > 0 ? s[^1] : '\0';
+        // xterm modifiers: "1;<m>X" / "<n>;<m>~" where m-1 is a bit set: 1=shift 2=alt 4=ctrl.
+        var (shift, alt, ctrl) = ParseModifier(s);
         return key switch
         {
-            'A' => new KeyEvent(KeyKind.Up),
-            'B' => new KeyEvent(KeyKind.Down),
-            'C' => new KeyEvent(KeyKind.Right),
-            'D' => new KeyEvent(KeyKind.Left),
-            'H' => new KeyEvent(KeyKind.Home),
-            'F' => new KeyEvent(KeyKind.End),
-            '~' => ParseTildeKey(s),
-            _ => null, // unrecognized report (e.g. CSI 14t reply) — ignore. CSI 't' handled below.
+            'A' => new KeyEvent(KeyKind.Up, Ctrl: ctrl, Alt: alt, Shift: shift),
+            'B' => new KeyEvent(KeyKind.Down, Ctrl: ctrl, Alt: alt, Shift: shift),
+            'C' => new KeyEvent(KeyKind.Right, Ctrl: ctrl, Alt: alt, Shift: shift),
+            'D' => new KeyEvent(KeyKind.Left, Ctrl: ctrl, Alt: alt, Shift: shift),
+            'H' => new KeyEvent(KeyKind.Home, Ctrl: ctrl, Alt: alt, Shift: shift),
+            'F' => new KeyEvent(KeyKind.End, Ctrl: ctrl, Alt: alt, Shift: shift),
+            'Z' => new KeyEvent(KeyKind.Tab, Shift: true),                 // CSI Z = back-tab
+            'P' => new KeyEvent(KeyKind.Function, Number: 1, Ctrl: ctrl, Alt: alt, Shift: shift),
+            'Q' => new KeyEvent(KeyKind.Function, Number: 2, Ctrl: ctrl, Alt: alt, Shift: shift),
+            'S' => new KeyEvent(KeyKind.Function, Number: 4, Ctrl: ctrl, Alt: alt, Shift: shift),
+            '~' => ParseTildeKey(s, shift, alt, ctrl),
+            _ => null, // unrecognized — ignore
         };
     }
 
-    private static KeyEvent? ParseTildeKey(string s)
+    private static (bool Shift, bool Alt, bool Ctrl) ParseModifier(string s)
+    {
+        int semi = s.IndexOf(';');
+        if (semi < 0) return (false, false, false);
+        var rest = s[(semi + 1)..].TrimEnd('~', 'A', 'B', 'C', 'D', 'H', 'F', 'P', 'Q', 'S', 'R');
+        int colon = rest.IndexOf(':');   // kitty-style "1;5:1" event-type suffix
+        if (colon >= 0) rest = rest[..colon];
+        if (!int.TryParse(rest, out var m) || m < 2) return (false, false, false);
+        int bits = m - 1;
+        return ((bits & 1) != 0, (bits & 2) != 0, (bits & 4) != 0);
+    }
+
+    private static KeyEvent? ParseTildeKey(string s, bool shift, bool alt, bool ctrl)
     {
         // s looks like "1~", "5~", "6~", possibly "5;3~". Take the leading number.
         var semi = s.IndexOf(';');
@@ -194,10 +324,15 @@ internal static class KeyReader
         if (!int.TryParse(numStr, out var code)) return null;
         return code switch
         {
-            1 or 7 => new KeyEvent(KeyKind.Home),
-            4 or 8 => new KeyEvent(KeyKind.End),
-            5 => new KeyEvent(KeyKind.PageUp),
-            6 => new KeyEvent(KeyKind.PageDown),
+            1 or 7 => new KeyEvent(KeyKind.Home, Ctrl: ctrl, Alt: alt, Shift: shift),
+            2 => new KeyEvent(KeyKind.Insert, Ctrl: ctrl, Alt: alt, Shift: shift),
+            3 => new KeyEvent(KeyKind.Delete, Ctrl: ctrl, Alt: alt, Shift: shift),
+            4 or 8 => new KeyEvent(KeyKind.End, Ctrl: ctrl, Alt: alt, Shift: shift),
+            5 => new KeyEvent(KeyKind.PageUp, Ctrl: ctrl, Alt: alt, Shift: shift),
+            6 => new KeyEvent(KeyKind.PageDown, Ctrl: ctrl, Alt: alt, Shift: shift),
+            11 or 12 or 13 or 14 or 15 => new KeyEvent(KeyKind.Function, Number: code - 10, Ctrl: ctrl, Alt: alt, Shift: shift),
+            17 or 18 or 19 or 20 or 21 => new KeyEvent(KeyKind.Function, Number: code - 11, Ctrl: ctrl, Alt: alt, Shift: shift),
+            23 or 24 => new KeyEvent(KeyKind.Function, Number: code - 12, Ctrl: ctrl, Alt: alt, Shift: shift),
             _ => null,
         };
     }
@@ -207,12 +342,14 @@ internal static class KeyReader
     private static KeyEvent? MouseFromSgr(int code, int col, int row, bool release)
     {
         bool ctrl = (code & 0x10) != 0;
+        bool alt = (code & 0x08) != 0;
+        bool shift = (code & 0x04) != 0;
         if ((code & 0x40) != 0)
         {
             // Wheel: button 0 = up, 1 = down.
             var up = (code & 0x03) == 0;
-            return up ? new KeyEvent(KeyKind.MouseScrollUp, Ctrl: ctrl)
-                      : new KeyEvent(KeyKind.MouseScrollDown, Ctrl: ctrl);
+            return up ? new KeyEvent(KeyKind.MouseScrollUp, Ctrl: ctrl, Alt: alt, Shift: shift, MouseRow: row, MouseCol: col)
+                      : new KeyEvent(KeyKind.MouseScrollDown, Ctrl: ctrl, Alt: alt, Shift: shift, MouseRow: row, MouseCol: col);
         }
 
         var button = code & 0x03;
@@ -234,8 +371,9 @@ internal static class KeyReader
         return button switch
         {
             2 => new KeyEvent(KeyKind.MouseRightClick, MouseRow: row, MouseCol: col),
-            0 => new KeyEvent(KeyKind.MouseClick, MouseRow: row, MouseCol: col, Ctrl: ctrl),
-            _ => null, // middle button: ignore
+            1 => new KeyEvent(KeyKind.MouseMiddleClick, MouseRow: row, MouseCol: col),
+            0 => new KeyEvent(KeyKind.MouseClick, MouseRow: row, MouseCol: col, Ctrl: ctrl, Alt: alt, Shift: shift),
+            _ => null,
         };
     }
 
@@ -256,9 +394,11 @@ internal static class KeyReader
             modeChanged = SetConsoleMode(handle, MouseCaptureMode);
         }
 
-        var records = new INPUT_RECORD[16];
+        var records = new INPUT_RECORD[64];
         bool inEscape = false;          // swallowing a terminal report like CSI ... <final>
-        var escBuf = new System.Text.StringBuilder();
+        bool inPaste = false;           // between CSI 200~ and CSI 201~
+        var escBuf = new StringBuilder();
+        var pasteBuf = new StringBuilder();
         try
         {
             while (isRunning())
@@ -285,26 +425,50 @@ internal static class KeyReader
                             if (ch != '\0')
                             {
                                 escBuf.Append(ch);
-                                // A CSI/SS3 sequence ends at the first letter or '~'.
-                                if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '~')
+                                char kind = escBuf.Length > 1 ? escBuf[1] : '\0';
+                                bool osc = kind is ']' or 'P' or '_' or '^';
+                                bool done = osc
+                                    ? (ch == '\a' || (ch == '\\' && escBuf.Length > 2 && escBuf[^2] == '\x1b'))
+                                    : ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '~');
+                                if (done)
                                 {
-                                    TryParseReport(escBuf.ToString());
+                                    var seq = escBuf.ToString(1, escBuf.Length - 1);
                                     inEscape = false;
                                     escBuf.Clear();
+                                    if (seq == "[200~") { inPaste = true; pasteBuf.Clear(); continue; }
+                                    if (seq == "[201~")
+                                    {
+                                        inPaste = false;
+                                        yield return new KeyEvent(KeyKind.Paste, Text: pasteBuf.ToString());
+                                        pasteBuf.Clear();
+                                        continue;
+                                    }
+                                    if (!osc)
+                                    {
+                                        var parsed = ParseCsi(seq);
+                                        if (parsed is not null && !inPaste) yield return parsed;
+                                    }
+                                    else TryParseReport(seq);
                                 }
-                                else if (escBuf.Length > 32) { inEscape = false; escBuf.Clear(); }
+                                else if (escBuf.Length > 4096) { inEscape = false; escBuf.Clear(); }
                             }
                             continue;
                         }
                         if (ch == '\x1b')
                         {
                             // Could be a real Escape key or the start of a report sequence. If the
-                            // very next char in this batch is '[' or 'O', treat as a report.
-                            bool nextIsCsi = i + 1 < read && records[i + 1].EventType == KEY_EVENT &&
+                            // very next char in this batch is '[' / 'O' / ']' / 'P' / '_', treat as a sequence.
+                            bool nextIsSeq = i + 1 < read && records[i + 1].EventType == KEY_EVENT &&
                                              records[i + 1].KeyEvent.bKeyDown != 0 &&
-                                             (records[i + 1].KeyEvent.UnicodeChar == '[' || records[i + 1].KeyEvent.UnicodeChar == 'O');
-                            if (nextIsCsi) { inEscape = true; escBuf.Clear(); escBuf.Append(ch); continue; }
+                                             records[i + 1].KeyEvent.UnicodeChar is '[' or 'O' or ']' or 'P' or '_';
+                            if (nextIsSeq) { inEscape = true; escBuf.Clear(); escBuf.Append(ch); continue; }
                             // else fall through and emit Escape via FromKeyEventRecord.
+                        }
+
+                        if (inPaste)
+                        {
+                            if (ch != '\0') pasteBuf.Append(ch == '\r' ? '\n' : ch);
+                            continue;
                         }
 
                         var ev = FromKeyEventRecord(rec.KeyEvent);
@@ -315,7 +479,11 @@ internal static class KeyReader
                         var ev = FromMouseEventRecord(rec.MouseEvent);
                         if (ev is not null) yield return ev;
                     }
-                    // WINDOW_BUFFER_SIZE_EVENT / FOCUS_EVENT / MENU_EVENT: ignored.
+                    else if (rec.EventType == FOCUS_EVENT)
+                    {
+                        yield return new KeyEvent(rec.FocusEvent.bSetFocus != 0 ? KeyKind.FocusIn : KeyKind.FocusOut);
+                    }
+                    // WINDOW_BUFFER_SIZE_EVENT: the render loop polls the console size each tick.
                 }
             }
         }
@@ -329,22 +497,26 @@ internal static class KeyReader
 
     private static KeyEvent? FromMouseEventRecord(in MOUSE_EVENT_RECORD me)
     {
+        bool ctrl = (me.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
+        bool alt = (me.dwControlKeyState & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) != 0;
+        bool shift = (me.dwControlKeyState & SHIFT_PRESSED) != 0;
+        int row = me.dwMousePosition.Y, colPos = me.dwMousePosition.X;
+
         if (me.dwEventFlags == MOUSE_WHEELED)
         {
             // High word of dwButtonState is the wheel delta (signed). Positive = wheel up.
             short delta = (short)((me.dwButtonState >> 16) & 0xFFFF);
-            bool ctrl = (me.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
             return delta > 0
-                ? new KeyEvent(KeyKind.MouseScrollUp, Ctrl: ctrl)
-                : new KeyEvent(KeyKind.MouseScrollDown, Ctrl: ctrl);
+                ? new KeyEvent(KeyKind.MouseScrollUp, Ctrl: ctrl, Alt: alt, Shift: shift, MouseRow: row, MouseCol: colPos)
+                : new KeyEvent(KeyKind.MouseScrollDown, Ctrl: ctrl, Alt: alt, Shift: shift, MouseRow: row, MouseCol: colPos);
         }
 
         bool leftNow = (me.dwButtonState & FROM_LEFT_1ST_BUTTON) != 0;
         bool leftBefore = (_prevButtonState & FROM_LEFT_1ST_BUTTON) != 0;
         bool rightNow = (me.dwButtonState & RIGHTMOST_BUTTON) != 0;
         bool rightBefore = (_prevButtonState & RIGHTMOST_BUTTON) != 0;
-        bool ctrlDown = (me.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
-        int row = me.dwMousePosition.Y, colPos = me.dwMousePosition.X;
+        bool middleNow = (me.dwButtonState & FROM_LEFT_2ND_BUTTON) != 0;
+        bool middleBefore = (_prevButtonState & FROM_LEFT_2ND_BUTTON) != 0;
         _prevButtonState = me.dwButtonState;
 
         // Drag: mouse moved while the left button is held.
@@ -360,12 +532,14 @@ internal static class KeyReader
             // Right-button press edge → right-click (used to copy a selection).
             if (rightNow && !rightBefore)
                 return new KeyEvent(KeyKind.MouseRightClick, MouseRow: row, MouseCol: colPos);
+            if (middleNow && !middleBefore)
+                return new KeyEvent(KeyKind.MouseMiddleClick, MouseRow: row, MouseCol: colPos);
 
             // Left-button down edge → a click (follows links in normal mode; starts a drag
             // selection in mark mode — the viewer decides based on its current mode). Ctrl is
             // carried so Ctrl+click can open a link without the confirmation prompt.
             if (leftNow && !leftBefore)
-                return new KeyEvent(KeyKind.MouseClick, MouseRow: row, MouseCol: colPos, Ctrl: ctrlDown);
+                return new KeyEvent(KeyKind.MouseClick, MouseRow: row, MouseCol: colPos, Ctrl: ctrl, Alt: alt, Shift: shift);
 
             // Left-button up edge → end of a drag.
             if (!leftNow && leftBefore)
@@ -377,33 +551,54 @@ internal static class KeyReader
     private static KeyEvent? FromKeyEventRecord(in KEY_EVENT_RECORD ke)
     {
         bool ctrl = (ke.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
+        bool alt = (ke.dwControlKeyState & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) != 0;
+        bool shift = (ke.dwControlKeyState & SHIFT_PRESSED) != 0;
+        char ch = (char)ke.UnicodeChar;
+
+        // AltGr (Ctrl+RightAlt on many layouts) produces ordinary printable characters such as '@'
+        // or '{': those are plain text, not Ctrl/Alt chords.
+        bool altGr = (ke.dwControlKeyState & RIGHT_ALT_PRESSED) != 0 && (ke.dwControlKeyState & LEFT_CTRL_PRESSED) != 0;
+        if (altGr && ch != '\0' && !char.IsControl(ch)) { ctrl = false; alt = false; }
 
         switch (ke.wVirtualKeyCode)
         {
-            case VK_UP: return new KeyEvent(KeyKind.Up);
-            case VK_DOWN: return new KeyEvent(KeyKind.Down);
-            case VK_LEFT: return new KeyEvent(KeyKind.Left);
-            case VK_RIGHT: return new KeyEvent(KeyKind.Right);
-            case VK_HOME: return new KeyEvent(KeyKind.Home);
-            case VK_END: return new KeyEvent(KeyKind.End);
-            case VK_PRIOR: return new KeyEvent(KeyKind.PageUp);
-            case VK_NEXT: return new KeyEvent(KeyKind.PageDown);
-            case VK_RETURN: return new KeyEvent(KeyKind.Enter);
+            case VK_UP: return new KeyEvent(KeyKind.Up, Ctrl: ctrl, Alt: alt, Shift: shift);
+            case VK_DOWN: return new KeyEvent(KeyKind.Down, Ctrl: ctrl, Alt: alt, Shift: shift);
+            case VK_LEFT: return new KeyEvent(KeyKind.Left, Ctrl: ctrl, Alt: alt, Shift: shift);
+            case VK_RIGHT: return new KeyEvent(KeyKind.Right, Ctrl: ctrl, Alt: alt, Shift: shift);
+            case VK_HOME: return new KeyEvent(KeyKind.Home, Ctrl: ctrl, Alt: alt, Shift: shift);
+            case VK_END: return new KeyEvent(KeyKind.End, Ctrl: ctrl, Alt: alt, Shift: shift);
+            case VK_PRIOR: return new KeyEvent(KeyKind.PageUp, Ctrl: ctrl, Alt: alt, Shift: shift);
+            case VK_NEXT: return new KeyEvent(KeyKind.PageDown, Ctrl: ctrl, Alt: alt, Shift: shift);
+            case VK_INSERT: return new KeyEvent(KeyKind.Insert, Ctrl: ctrl, Alt: alt, Shift: shift);
+            case VK_DELETE: return new KeyEvent(KeyKind.Delete, Ctrl: ctrl, Alt: alt, Shift: shift);
+            case VK_RETURN: return new KeyEvent(KeyKind.Enter, Ctrl: ctrl, Alt: alt, Shift: shift);
             case VK_ESCAPE: return new KeyEvent(KeyKind.Escape);
-            case VK_BACK: return new KeyEvent(KeyKind.Backspace);
-            case VK_TAB: return new KeyEvent(KeyKind.Tab);
+            case VK_BACK: return new KeyEvent(KeyKind.Backspace, Ctrl: ctrl, Alt: alt);
+            case VK_TAB: return new KeyEvent(KeyKind.Tab, Ctrl: ctrl, Alt: alt, Shift: shift);
+            case >= VK_F1 and <= VK_F12:
+                return new KeyEvent(KeyKind.Function, Number: ke.wVirtualKeyCode - VK_F1 + 1, Ctrl: ctrl, Alt: alt, Shift: shift);
             case VK_SHIFT or VK_CONTROL or VK_MENU or VK_CAPITAL
                 or VK_LWIN or VK_RWIN or VK_NUMLOCK or VK_SCROLL: return null; // modifier-only
         }
 
-        char ch = (char)ke.UnicodeChar;
         if (ctrl && ch is >= (char)1 and <= (char)26)
         {
             // Ctrl+A..Z arrive as 1..26; normalize to the letter.
-            return new KeyEvent(KeyKind.Char, (char)('a' + (ch - 1)), Ctrl: true);
+            return new KeyEvent(KeyKind.Char, (char)('a' + (ch - 1)), Ctrl: true, Alt: alt);
+        }
+        if (ctrl && ch == '\0' && ke.wVirtualKeyCode is >= 0x30 and <= 0x39)
+        {
+            // Ctrl+digit yields no character; synthesize it from the virtual key.
+            return new KeyEvent(KeyKind.Char, (char)('0' + (ke.wVirtualKeyCode - 0x30)), Ctrl: true, Alt: alt);
+        }
+        if (alt && ch == '\0' && ke.wVirtualKeyCode is >= 0x41 and <= 0x5A)
+        {
+            // Alt+letter: the record carries no character on some consoles; synthesize it.
+            return new KeyEvent(KeyKind.Char, (char)('a' + (ke.wVirtualKeyCode - 0x41)), Alt: true, Ctrl: ctrl);
         }
         if (ch != '\0' && !char.IsControl(ch))
-            return new KeyEvent(KeyKind.Char, ch, ctrl);
+            return new KeyEvent(KeyKind.Char, ch, ctrl, Alt: alt);
         return null;
     }
 
@@ -411,13 +606,18 @@ internal static class KeyReader
     private const int STD_INPUT_HANDLE = -10;
     private const ushort KEY_EVENT = 0x0001;
     private const ushort MOUSE_EVENT = 0x0002;
+    private const ushort FOCUS_EVENT = 0x0010;
     private const uint MOUSE_WHEELED = 0x0004;
     private const uint MOUSE_MOVED = 0x0001;
     private const uint DOUBLE_CLICK = 0x0002;
     private const uint FROM_LEFT_1ST_BUTTON = 0x0001;
     private const uint RIGHTMOST_BUTTON = 0x0002;
+    private const uint FROM_LEFT_2ND_BUTTON = 0x0004;
     private const int LEFT_CTRL_PRESSED = 0x0008;
     private const int RIGHT_CTRL_PRESSED = 0x0004;
+    private const int LEFT_ALT_PRESSED = 0x0002;
+    private const int RIGHT_ALT_PRESSED = 0x0001;
+    private const int SHIFT_PRESSED = 0x0010;
 
     private const uint ENABLE_MOUSE_INPUT = 0x0010;
     private const uint ENABLE_WINDOW_INPUT = 0x0008;
@@ -427,29 +627,29 @@ internal static class KeyReader
 
     // Mode while we capture the mouse (for wheel scrolling): mouse on, quick-edit off.
     private const uint MouseCaptureMode = ENABLE_PROCESSED_INPUT | ENABLE_MOUSE_INPUT | ENABLE_WINDOW_INPUT | ENABLE_EXTENDED_FLAGS;
-    // Mode for text selection: mouse reporting off + quick-edit on so the terminal's native
-    // click-drag selection works.
-    private const uint SelectionMode = ENABLE_PROCESSED_INPUT | ENABLE_WINDOW_INPUT | ENABLE_EXTENDED_FLAGS | ENABLE_QUICK_EDIT_MODE;
+    // Mode without mouse reporting: quick-edit on so the terminal's native click-drag selection works.
+    private const uint NoMouseMode = ENABLE_PROCESSED_INPUT | ENABLE_WINDOW_INPUT | ENABLE_EXTENDED_FLAGS | ENABLE_QUICK_EDIT_MODE;
 
     private static nint _inputHandle;
     private static uint _savedMode;
 
     /// <summary>
-    /// Switches between mouse-capture mode (wheel scrolling) and selection mode (terminal-native
-    /// click-drag text selection). Only affects Windows; no-op elsewhere.
+    /// Switches between mouse-capture mode (wheel scrolling, clicks) and no-mouse mode (the
+    /// terminal's native click-drag text selection). Only affects Windows; no-op elsewhere.
     /// </summary>
     public static void SetMouseCapture(bool capture)
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
         if (_inputHandle == 0) return;
-        SetConsoleMode(_inputHandle, capture ? MouseCaptureMode : SelectionMode);
+        SetConsoleMode(_inputHandle, capture ? MouseCaptureMode : NoMouseMode);
     }
 
     private const ushort VK_BACK = 0x08, VK_TAB = 0x09, VK_RETURN = 0x0D, VK_SHIFT = 0x10,
         VK_CONTROL = 0x11, VK_MENU = 0x12, VK_CAPITAL = 0x14, VK_ESCAPE = 0x1B,
         VK_PRIOR = 0x21, VK_NEXT = 0x22, VK_END = 0x23, VK_HOME = 0x24,
         VK_LEFT = 0x25, VK_UP = 0x26, VK_RIGHT = 0x27, VK_DOWN = 0x28,
-        VK_LWIN = 0x5B, VK_RWIN = 0x5C, VK_NUMLOCK = 0x90, VK_SCROLL = 0x91;
+        VK_INSERT = 0x2D, VK_DELETE = 0x2E,
+        VK_LWIN = 0x5B, VK_RWIN = 0x5C, VK_F1 = 0x70, VK_F12 = 0x7B, VK_NUMLOCK = 0x90, VK_SCROLL = 0x91;
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern nint GetStdHandle(int nStdHandle);
@@ -473,6 +673,7 @@ internal static class KeyReader
         [FieldOffset(0)] public ushort EventType;
         [FieldOffset(4)] public KEY_EVENT_RECORD KeyEvent;
         [FieldOffset(4)] public MOUSE_EVENT_RECORD MouseEvent;
+        [FieldOffset(4)] public FOCUS_EVENT_RECORD FocusEvent;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -493,6 +694,12 @@ internal static class KeyReader
         public uint dwButtonState;
         public uint dwControlKeyState;
         public uint dwEventFlags;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FOCUS_EVENT_RECORD
+    {
+        public int bSetFocus;
     }
 
     [StructLayout(LayoutKind.Sequential)]

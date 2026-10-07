@@ -38,6 +38,7 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
         _lines.Clear();
         _links.Clear();
         _anchors.Clear();
+        _abbreviationsShown.Clear();
         _toc = toc ?? [];
         RenderFrontMatterHeader(frontMatter);
         if (document is ContainerBlock container)
@@ -160,29 +161,30 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
 
         if (heading.Level == 1)
         {
-            // H1: a bold banner row with a colored background bar.
-            var line = new DisplayLine { HeadingId = id, SourceLine = heading.Line + 1, LineBackground = theme.BackgroundElevated };
-            line.Spans.Add(new StyledSpan("  ", null, CellStyle.None, null, theme.BackgroundElevated));
-            line.Spans.Add(new StyledSpan(titleText, theme.H1, CellStyle.Bold, null, theme.BackgroundElevated));
-            _lines.Add(line);
+            // H1: a bold banner row with a colored background bar. Inline formatting (code, emphasis,
+            // links) is preserved and long titles wrap instead of being clipped.
+            var h1 = InlineToSpans(heading.Inline, theme.H1, CellStyle.Bold);
+            EmitWrapped(h1, 2, headingId: id, sourceLine: heading.Line + 1, lineBackground: theme.BackgroundElevated);
             // underline rule
             var rule = new DisplayLine();
-            rule.Spans.Add(new StyledSpan(new string('━', Math.Max(8, Math.Min(_width - 1, titleText.Length + 4))), theme.H1));
+            rule.Spans.Add(new StyledSpan(new string('━', Math.Max(8, Math.Min(_width - 1, TextWidth.Of(titleText) + 4))), theme.H1));
             _lines.Add(rule);
             AddBlank();
             return;
         }
 
-        // H2/H3+: a colored marker + bold title; H2 also gets a thin underline.
-        var (marker, color) = heading.Level switch
+        // H2/H3+: a colored marker + bold title; H2 also gets a thin underline. Each level has its
+        // own glyph so H4/H5/H6 remain distinguishable.
+        var (marker, color, extraStyle) = heading.Level switch
         {
-            2 => ("▌ ", theme.H2),
-            3 => ("● ", theme.H3),
-            4 => ("◗ ", theme.Heading),
-            _ => ("· ", theme.Muted),
+            2 => ("▌ ", theme.H2, CellStyle.None),
+            3 => ("● ", theme.H3, CellStyle.None),
+            4 => ("◗ ", theme.Heading, CellStyle.None),
+            5 => ("▸ ", theme.Heading, CellStyle.None),
+            _ => ("· ", theme.Muted, CellStyle.Italic),
         };
         var spans = new List<StyledSpan> { new(marker, color, CellStyle.Bold) };
-        spans.AddRange(InlineToSpans(heading.Inline, color, CellStyle.Bold));
+        spans.AddRange(InlineToSpans(heading.Inline, color, CellStyle.Bold | extraStyle));
         EmitWrapped(spans, 0, headingId: id, sourceLine: heading.Line + 1);
         if (heading.Level == 2)
         {
@@ -247,11 +249,14 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
             if (found) return;
             switch (inline)
             {
-                case Markdig.Syntax.Inlines.LinkInline { IsImage: true }:
-                    return; // skip image subtrees (their alt text isn't shown)
+                case Markdig.Syntax.Inlines.LinkInline { IsImage: true } img:
+                    // Media embeds render as text links, so they count as text; real images don't.
+                    if (IsMediaUrl(img.Url)) found = true;
+                    return;
                 case Markdig.Syntax.Inlines.LiteralInline lit:
                     if (!string.IsNullOrWhiteSpace(lit.Content.ToString())) found = true;
                     return;
+                case Markdig.Syntax.Inlines.HtmlEntityInline:
                 case Markdig.Syntax.Inlines.CodeInline:
                 case Markdig.Syntax.Inlines.AutolinkInline:
                     found = true;
@@ -276,6 +281,7 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
             {
                 if (link.IsImage)
                 {
+                    if (IsMediaUrl(link.Url)) return;   // audio/video: rendered as a text link instead
                     var alt = GetInlineText(link);
                     result.Add((link.Url ?? "", alt, enclosingLink));
                     return;
@@ -394,6 +400,17 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
                 if (link.IsImage)
                 {
                     var alt = GetInlineText(link);
+                    if (IsMediaUrl(link.Url))
+                    {
+                        // Audio/video embeds (YouTube, Vimeo, .mp4, .mp3, …) can't play in a terminal:
+                        // show a play marker + alt as a followable link instead of fetching the page
+                        // as if it were an image.
+                        var mediaId = RegisterLink(link.Url ?? "");
+                        spans.Add(new StyledSpan("▶ ", theme.Accent, style, mediaId));
+                        spans.Add(new StyledSpan(string.IsNullOrWhiteSpace(alt) ? link.Url ?? "media" : alt, theme.Link, style | CellStyle.Underline, mediaId));
+                        AppendLinkMarker(spans, mediaId);
+                        break;
+                    }
                     spans.Add(new StyledSpan($"🖼 {alt} ({link.Url})", theme.Muted, style | CellStyle.Italic, linkId));
                     break;
                 }
@@ -414,6 +431,10 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
             case LineBreakInline lb:
                 spans.Add(new StyledSpan(lb.IsHard ? "\n" : " ", color, style, linkId));
                 break;
+            case HtmlEntityInline entity:
+                // &amp; &copy; &#169; &nbsp; … — emit the decoded character(s), never drop them.
+                spans.Add(new StyledSpan(entity.Transcoded.ToString(), color, style, linkId));
+                break;
             case Markdig.Extensions.TaskLists.TaskList task:
                 // GitHub task list checkbox. ☑ when checked, ☐ when unchecked.
                 spans.Add(new StyledSpan(task.Checked ? "☑ " : "☐ ",
@@ -424,16 +445,19 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
                 AppendFootnoteRef(footnote, spans, style, linkId);
                 break;
             case Markdig.Extensions.Abbreviations.AbbreviationInline abbr:
-                // The abbreviated term itself (otherwise it would vanish). The definition/title is
-                // shown once dimmed in parentheses so the expansion is visible in a terminal.
-                spans.Add(new StyledSpan(abbr.Abbreviation.Label ?? "", color, style | CellStyle.Underline, linkId));
+            {
+                // The abbreviated term itself (otherwise it would vanish), underlined. The first time
+                // each abbreviation appears, its definition follows once, dimmed in parentheses, so
+                // the expansion is visible in a terminal (there's no hover tooltip).
+                var label = abbr.Abbreviation.Label ?? "";
+                spans.Add(new StyledSpan(label, color, style | CellStyle.Underline, linkId));
+                var expansion = abbr.Abbreviation.Text.ToString().Trim();
+                if (expansion.Length > 0 && _abbreviationsShown.Add(label))
+                    spans.Add(new StyledSpan($" ({expansion})", theme.Muted, style | CellStyle.Dim, linkId));
                 break;
+            }
             case Markdig.Syntax.Inlines.HtmlInline html:
-                // Raw inline HTML tags are dropped (we render Markdown, not markup), but an inline
-                // <a id="...">/<a name="..."> is a navigation target: register it so "#id" links
-                // resolve. Text between tags is a LiteralInline and still shows.
-                foreach (var anchorId in ExtractHtmlAnchorIds(html.Tag))
-                    RegisterAnchor(anchorId, _lines.Count);
+                AppendInlineHtml(html.Tag, spans, color, style, linkId);
                 break;
             case ContainerInline c:
                 foreach (var child in c) AppendInline(child, spans, color, style, linkId);
@@ -443,12 +467,59 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
         }
     }
 
+    // Abbreviations whose expansion has already been shown once in this document.
+    private readonly HashSet<string> _abbreviationsShown = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Handles a raw inline HTML tag. Line-break tags become hard breaks; an inline
+    /// <c>&lt;a id="…"&gt;</c>/<c>&lt;a name="…"&gt;</c> is a navigation target (registered so
+    /// <c>#id</c> links resolve); every other tag is dropped — the text between tags is a separate
+    /// <see cref="LiteralInline"/> and still shows.
+    /// </summary>
+    private void AppendInlineHtml(string tag, List<StyledSpan> spans, Rgb color, CellStyle style, int? linkId)
+    {
+        foreach (var anchorId in ExtractHtmlAnchorIds(tag))
+            RegisterAnchor(anchorId, _lines.Count);
+        if (IsLineBreakTag(tag))
+            spans.Add(new StyledSpan("\n", color, style, linkId));
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex LineBreakTagRegex = new(
+        @"^<br\s*/?\s*>$", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>True for <c>&lt;br&gt;</c>, <c>&lt;br/&gt;</c>, <c>&lt;br /&gt;</c> (any case).</summary>
+    internal static bool IsLineBreakTag(string tag) => LineBreakTagRegex.IsMatch(tag.Trim());
+
+    private static readonly string[] MediaExtensions = [".mp4", ".webm", ".ogv", ".mov", ".mp3", ".ogg", ".wav", ".m4a", ".flac"];
+
+    /// <summary>
+    /// True when an image URL actually points at audio/video (a media embed in GitHub/Markdig terms):
+    /// a known streaming host or a media file extension. Such targets must not be fetched as images.
+    /// </summary>
+    internal static bool IsMediaUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return false;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) 
+        {
+            var ext = Path.GetExtension(url.Split('?', '#')[0]).ToLowerInvariant();
+            return MediaExtensions.Contains(ext);
+        }
+        var host = uri.Host.ToLowerInvariant();
+        if (host.EndsWith("youtube.com") || host.EndsWith("youtu.be") || host.EndsWith("vimeo.com")
+            || host.EndsWith("youtube-nocookie.com") || host.EndsWith("dailymotion.com"))
+            return true;
+        var pathExt = Path.GetExtension(uri.AbsolutePath).ToLowerInvariant();
+        return MediaExtensions.Contains(pathExt);
+    }
+
     private static string GetInlineText(ContainerInline container)
     {
         var sb = new StringBuilder();
         foreach (var inline in container)
         {
             if (inline is LiteralInline lit) sb.Append(lit.Content.AsSpan());
+            else if (inline is HtmlEntityInline entity) sb.Append(entity.Transcoded.AsSpan());
+            else if (inline is CodeInline code) sb.Append(code.Content);
             else if (inline is ContainerInline c) sb.Append(GetInlineText(c));
         }
         return sb.ToString();

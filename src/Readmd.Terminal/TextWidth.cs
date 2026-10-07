@@ -14,11 +14,44 @@ internal static class TextWidth
     public static int Of(string s)
     {
         if (string.IsNullOrEmpty(s)) return 0;
+        // Fast path: pure ASCII (the overwhelmingly common case) is one cell per char.
+        bool ascii = true;
+        foreach (var ch in s) { if (ch >= 0x80 || ch < 0x20) { ascii = false; break; } }
+        if (ascii) return s.Length;
         int width = 0;
         var e = StringInfo.GetTextElementEnumerator(s);
         while (e.MoveNext())
             width += ElementWidth((string)e.Current);
         return width;
+    }
+
+    /// <summary>Display width of the first <paramref name="charCount"/> chars of <paramref name="s"/>.</summary>
+    public static int OfPrefix(string s, int charCount)
+    {
+        if (string.IsNullOrEmpty(s) || charCount <= 0) return 0;
+        if (charCount >= s.Length) return Of(s);
+        return Of(s[..charCount]);
+    }
+
+    /// <summary>
+    /// Maps a display column to the char index of the grapheme that covers it (so a selection or
+    /// search column measured on screen can be turned back into a string offset). Returns
+    /// <c>s.Length</c> when the column is past the end of the text.
+    /// </summary>
+    public static int CharIndexAtColumn(string s, int column)
+    {
+        if (string.IsNullOrEmpty(s) || column <= 0) return 0;
+        int width = 0, index = 0;
+        var e = StringInfo.GetTextElementEnumerator(s);
+        while (e.MoveNext())
+        {
+            var g = (string)e.Current;
+            int gw = ElementWidth(g);
+            if (width + gw > column) return index;
+            width += gw;
+            index += g.Length;
+        }
+        return s.Length;
     }
 
     /// <summary>Width of a single grapheme cluster (text element).</summary>

@@ -59,6 +59,12 @@ public sealed class DisplayLine
     public int SourceLine { get; init; }
 
     /// <summary>
+    /// Identifies the source block this line belongs to (0 = none). Lines of one code block share an
+    /// id so a background highlighter can find and restyle them in place after the first paint.
+    /// </summary>
+    public int BlockId { get; set; }
+
+    /// <summary>
     /// If set, the whole line is filled with this background color out to the terminal width
     /// (used to give code blocks a distinct backdrop).
     /// </summary>
@@ -75,9 +81,29 @@ public sealed class DisplayLine
     /// </summary>
     public int? ImageLinkId { get; set; }
 
-    public int VisibleLength => Spans.Sum(s => s.Text.Length);
+    public int VisibleLength
+    {
+        get { int n = 0; foreach (var s in Spans) n += s.Text.Length; return n; }
+    }
 
-    public string PlainText => string.Concat(Spans.Select(s => s.Text));
+    public string PlainText
+    {
+        get
+        {
+            if (Spans.Count == 0) return "";
+            if (Spans.Count == 1) return Spans[0].Text;
+            var sb = new System.Text.StringBuilder();
+            foreach (var s in Spans) sb.Append(s.Text);
+            return sb.ToString();
+        }
+    }
+
+    /// <summary>Replaces this line's spans in place (used by the background highlighter).</summary>
+    public void ReplaceSpans(IEnumerable<StyledSpan> spans)
+    {
+        Spans.Clear();
+        Spans.AddRange(spans);
+    }
 
     public static DisplayLine Empty() => new();
 }

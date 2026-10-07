@@ -10,20 +10,22 @@ public sealed partial class MarkdownTerminalRenderer
     // ---------------- word-wrap emission ----------------
     /// <summary>
     /// Appends spans as one or more display lines, wrapping at word boundaries to fit
-    /// <c>Width - indent</c>. Hard line breaks ("\n" spans) force a new line.
+    /// <c>Width - indent</c>. Hard line breaks ("\n" spans) force a new line. An optional
+    /// <paramref name="gutter"/> is drawn in the indent area of the first line; it is repeated on
+    /// continuation lines only when <paramref name="repeatGutter"/> is true (quote bars, alert bars),
+    /// and replaced by plain indentation otherwise (list bullets, footnote numbers).
     /// </summary>
     private void EmitWrapped(List<StyledSpan> spans, int indent, string? headingId = null, int sourceLine = 0,
-        Rgb? gutterColor = null, string? gutter = null)
+        Rgb? gutterColor = null, string? gutter = null, bool repeatGutter = true, Rgb? lineBackground = null)
     {
         int max = Math.Max(8, _width - indent);
-        var current = NewLine(indent, headingId, sourceLine, gutterColor, gutter);
+        var current = NewLine(indent, headingId, sourceLine, gutterColor, gutter, lineBackground);
         int used = 0;
-        bool firstLineOfBlock = true;
 
         void Flush()
         {
             _lines.Add(current);
-            current = NewLine(indent, null, sourceLine, gutterColor, firstLineOfBlock ? null : gutter);
+            current = NewLine(indent, null, sourceLine, gutterColor, repeatGutter ? gutter : null, lineBackground);
             used = 0;
         }
 
@@ -31,7 +33,6 @@ public sealed partial class MarkdownTerminalRenderer
         {
             if (span.Text == "\n")
             {
-                firstLineOfBlock = false;
                 Flush();
                 continue;
             }
@@ -39,18 +40,18 @@ public sealed partial class MarkdownTerminalRenderer
             // Split span into words but keep spaces.
             foreach (var token in Tokenize(span.Text))
             {
-                if (token == "\n") { firstLineOfBlock = false; Flush(); continue; }
+                if (token == "\n") { Flush(); continue; }
                 int tokenLen = TextWidth.Of(token);
 
                 // A single token longer than the whole line (e.g. a long URL or path) would otherwise
                 // be clipped at the screen edge. Hard-break it across lines at grapheme boundaries.
                 if (tokenLen > max && token.Trim().Length > 0)
                 {
-                    if (used > 0) { firstLineOfBlock = false; Flush(); }
+                    if (used > 0) Flush();
                     foreach (var g in TextWidth.Graphemes(token))
                     {
                         int gw = TextWidth.ElementWidth(g);
-                        if (used + gw > max && used > 0) { firstLineOfBlock = false; Flush(); }
+                        if (used + gw > max && used > 0) Flush();
                         current.Spans.Add(span with { Text = g });
                         used += gw;
                     }
@@ -59,7 +60,6 @@ public sealed partial class MarkdownTerminalRenderer
 
                 if (used + tokenLen > max && used > 0)
                 {
-                    firstLineOfBlock = false;
                     Flush();
                     if (token.Trim().Length == 0) continue; // don't carry leading space to new line
                 }
@@ -72,14 +72,14 @@ public sealed partial class MarkdownTerminalRenderer
         _lines.Add(current);
     }
 
-    private DisplayLine NewLine(int indent, string? headingId, int sourceLine, Rgb? gutterColor, string? gutter)
+    private DisplayLine NewLine(int indent, string? headingId, int sourceLine, Rgb? gutterColor, string? gutter, Rgb? lineBackground = null)
     {
-        var line = new DisplayLine { HeadingId = headingId, SourceLine = sourceLine };
+        var line = new DisplayLine { HeadingId = headingId, SourceLine = sourceLine, LineBackground = lineBackground };
         if (indent > 0)
         {
             if (gutter is not null)
             {
-                var pad = indent - gutter.Length;
+                var pad = indent - TextWidth.Of(gutter);
                 if (pad > 0) line.Spans.Add(new StyledSpan(new string(' ', pad)));
                 line.Spans.Add(new StyledSpan(gutter, gutterColor ?? Theme.Muted));
             }
@@ -107,8 +107,10 @@ public sealed partial class MarkdownTerminalRenderer
     // ---------------- lists ----------------
     private void RenderList(ListBlock list, int indent)
     {
-        // Ordered lists honor their start number (e.g. "5." continues from 5).
-        int number = list.IsOrdered && int.TryParse(list.OrderedStart, out var start) ? start : 1;
+        // Ordered lists honor their start number (e.g. "5." continues from 5). ListExtras also allows
+        // alpha ("a.") and roman ("i.") numbering, signalled by BulletType, and a ')' delimiter.
+        int number = list.IsOrdered ? ParseListStart(list.OrderedStart, list.BulletType) : 1;
+        char delimiter = list.IsOrdered && list.OrderedDelimiter == ')' ? ')' : '.';
         // Unordered bullets vary by nesting depth: • ◦ ▪ (cycling).
         string[] bullets = { "• ", "◦ ", "▪ " };
         string bullet = bullets[_listDepth % bullets.Length];
@@ -123,17 +125,28 @@ public sealed partial class MarkdownTerminalRenderer
             if (loose && !firstItem) AddBlank();
             firstItem = false;
 
-            var marker = list.IsOrdered ? $"{number}. " : bullet;
+            var marker = list.IsOrdered ? FormatListNumber(number, list.BulletType) + delimiter + " " : bullet;
             number++;
-            int childIndent = indent + marker.Length;
+            int childIndent = indent + TextWidth.Of(marker);
             bool firstChild = true;
             foreach (var child in listItem)
             {
                 if (firstChild && child is ParagraphBlock para && para.Inline is not null)
                 {
+                    // The marker is a hanging gutter: continuation lines of a wrapped item align under
+                    // the item text, not under the bullet (so bullets never repeat mid-item).
                     var spans = InlineToSpans(para.Inline, Theme.Text);
-                    EmitWrapped(spans, childIndent, gutterColor: Theme.Accent, gutter: marker);
+                    EmitWrapped(spans, childIndent, sourceLine: para.Line + 1, gutterColor: Theme.Accent, gutter: marker, repeatGutter: false);
                     firstChild = false;
+                }
+                else if (firstChild)
+                {
+                    // Item whose first child isn't a paragraph (e.g. a nested list or code block):
+                    // still show the bullet on its own line so the item isn't anonymous.
+                    var line = NewLine(childIndent, null, 0, Theme.Accent, marker);
+                    _lines.Add(line);
+                    firstChild = false;
+                    RenderBlock(child, childIndent);
                 }
                 else
                 {
@@ -146,6 +159,70 @@ public sealed partial class MarkdownTerminalRenderer
     }
 
     private int _listDepth;
+
+    /// <summary>Parses an ordered-list start marker ("5", "a", "C", "iv") to its ordinal number.</summary>
+    private static int ParseListStart(string? start, char bulletType)
+    {
+        if (string.IsNullOrEmpty(start)) return 1;
+        if (int.TryParse(start, out var n)) return Math.Max(1, n);
+        switch (char.ToLowerInvariant(bulletType))
+        {
+            case 'a':
+                return start.Length == 1 && char.IsLetter(start[0]) ? char.ToLowerInvariant(start[0]) - 'a' + 1 : 1;
+            case 'i':
+                return Math.Max(1, FromRoman(start));
+        }
+        return 1;
+    }
+
+    /// <summary>Formats an ordinal in the list's numbering style: 1, a/A, or i/I.</summary>
+    private static string FormatListNumber(int n, char bulletType) => bulletType switch
+    {
+        'a' => ToAlpha(n, upper: false),
+        'A' => ToAlpha(n, upper: true),
+        'i' => ToRoman(n).ToLowerInvariant(),
+        'I' => ToRoman(n),
+        _ => n.ToString(),
+    };
+
+    private static string ToAlpha(int n, bool upper)
+    {
+        // 1 → a, 26 → z, 27 → aa (bijective base-26, like spreadsheet columns).
+        var sb = new System.Text.StringBuilder();
+        n = Math.Max(1, n);
+        while (n > 0)
+        {
+            n--;
+            sb.Insert(0, (char)((upper ? 'A' : 'a') + n % 26));
+            n /= 26;
+        }
+        return sb.ToString();
+    }
+
+    private static readonly (int Value, string Numeral)[] RomanNumerals =
+    {
+        (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"),
+        (50, "L"), (40, "XL"), (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"),
+    };
+
+    private static string ToRoman(int n)
+    {
+        if (n <= 0 || n >= 4000) return n.ToString();
+        var sb = new System.Text.StringBuilder();
+        foreach (var (value, numeral) in RomanNumerals)
+            while (n >= value) { sb.Append(numeral); n -= value; }
+        return sb.ToString();
+    }
+
+    private static int FromRoman(string s)
+    {
+        s = s.ToUpperInvariant();
+        int total = 0, i = 0;
+        foreach (var (value, numeral) in RomanNumerals)
+            while (i + numeral.Length <= s.Length && string.CompareOrdinal(s, i, numeral, 0, numeral.Length) == 0)
+            { total += value; i += numeral.Length; }
+        return i == s.Length && total > 0 ? total : 0;
+    }
 
     // ---------------- quotes & alerts ----------------
     private void RenderQuote(QuoteBlock quote, int indent)
@@ -238,12 +315,11 @@ public sealed partial class MarkdownTerminalRenderer
             {
                 if (child is Markdig.Syntax.LeafBlock leaf && leaf.Inline is not null)
                 {
-                    var spans = new List<StyledSpan>
-                    {
-                        new(first ? num : new string(' ', num.Length), Theme.Accent, CellStyle.Bold),
-                    };
-                    spans.AddRange(InlineToSpans(leaf.Inline, Theme.Text));
-                    EmitWrapped(spans, 2);
+                    // The number is a hanging gutter on the first paragraph; later paragraphs and
+                    // wrapped continuation lines align under the note text.
+                    var spans = InlineToSpans(leaf.Inline, Theme.Text);
+                    EmitWrapped(spans, 2 + num.Length, gutterColor: Theme.Accent,
+                        gutter: first ? num : null, repeatGutter: false);
                     first = false;
                 }
                 else
@@ -273,9 +349,8 @@ public sealed partial class MarkdownTerminalRenderer
                 }
                 else if (child is Markdig.Syntax.LeafBlock leaf && leaf.Inline is not null)
                 {
-                    var spans = new List<StyledSpan> { new(": ", Theme.Accent) };
-                    spans.AddRange(InlineToSpans(leaf.Inline, Theme.Text));
-                    EmitWrapped(spans, indent + 2);
+                    var spans = InlineToSpans(leaf.Inline, Theme.Text);
+                    EmitWrapped(spans, indent + 2, gutterColor: Theme.Accent, gutter: ": ", repeatGutter: false);
                 }
                 else
                 {
@@ -299,22 +374,91 @@ public sealed partial class MarkdownTerminalRenderer
         }
 
         EnsureBlankBefore();
-        var code = fenced.Lines.ToString().TrimEnd('\n');
+        var code = ExpandTabs(fenced.Lines.ToString().TrimEnd('\n'));
         var language = (fenced.Info ?? "").Trim();
-        var highlighted = CodeHighlighter.Highlight(code, language, Theme);
-        EmitCodeBlock(highlighted, indent, language);
+        EmitHighlightedOrDeferred(code, language, indent);
         AddBlank();
+    }
+
+    /// <summary>
+    /// Emits a code block. When highlighting is deferred (interactive viewer) and no cached highlight
+    /// exists, the block is painted in the plain code colour immediately and queued in
+    /// <see cref="PendingHighlights"/>; the viewer restyles the lines in place once the background
+    /// highlighter finishes. Synchronous callers (print/export) get the final colours directly.
+    /// </summary>
+    private void EmitHighlightedOrDeferred(string code, string language, int indent)
+    {
+        int blockId = ++_blockCounter;
+        List<List<StyledSpan>> spans;
+        var cached = CodeHighlighter.TryGetCached(code, language, Theme);
+        if (cached is not null) spans = cached;
+        else if (DeferHighlighting && CodeHighlighter.HasGrammar(language))
+        {
+            spans = CodeHighlighter.Plain(code, Theme);
+            _pendingHighlights.Add(new PendingHighlight(blockId, code, language, indent));
+        }
+        else spans = CodeHighlighter.Highlight(code, language, Theme);
+        EmitCodeBlock(spans, indent, language, blockId);
+    }
+
+    /// <summary>When true, code blocks are emitted unhighlighted and queued for background highlighting.</summary>
+    public bool DeferHighlighting { get; init; }
+
+    /// <summary>A code block emitted in plain colour that still needs syntax highlighting.</summary>
+    public sealed record PendingHighlight(int BlockId, string Code, string Language, int Indent);
+
+    private readonly List<PendingHighlight> _pendingHighlights = [];
+    public IReadOnlyList<PendingHighlight> PendingHighlights => _pendingHighlights;
+    private int _blockCounter;
+
+    /// <summary>
+    /// Re-renders a deferred code block with real highlighting and copies the new spans into the
+    /// existing display lines (which keep their identity, so scroll/search/reservations are
+    /// untouched). Row structure is identical because wrapping depends only on display width.
+    /// </summary>
+    public static void ApplyHighlight(IReadOnlyList<DisplayLine> blockLines, PendingHighlight pending,
+        List<List<StyledSpan>> highlighted, TerminalTheme theme, int width)
+    {
+        var scratch = new MarkdownTerminalRenderer(theme, width);
+        scratch.EmitCodeBlock(highlighted, pending.Indent, pending.Language, pending.BlockId);
+        if (scratch._lines.Count != blockLines.Count) return;   // layout mismatch: leave plain
+        for (int i = 0; i < blockLines.Count; i++)
+            blockLines[i].ReplaceSpans(scratch._lines[i].Spans);
     }
 
     private void RenderIndentedCode(CodeBlock code, int indent)
     {
         EnsureBlankBefore();
-        var text = code.Lines.ToString().TrimEnd('\n');
+        var text = ExpandTabs(code.Lines.ToString().TrimEnd('\n'));
         var lines = text.Split('\n')
             .Select(raw => (List<StyledSpan>)[new StyledSpan(raw, Theme.Text)])
             .ToList();
-        EmitCodeBlock(lines, indent, language: "");
+        EmitCodeBlock(lines, indent, language: "", ++_blockCounter);
         AddBlank();
+    }
+
+    /// <summary>Tab size used when expanding tabs inside code blocks (terminal tab stops would
+    /// otherwise misalign wrapping and clipping, which count a tab as one cell).</summary>
+    public int TabSize { get; init; } = 4;
+
+    /// <summary>Expands tabs to spaces at <see cref="TabSize"/> stops, per line.</summary>
+    private string ExpandTabs(string text)
+    {
+        if (text.IndexOf('\t') < 0) return text;
+        var sb = new System.Text.StringBuilder(text.Length + 16);
+        int col = 0;
+        foreach (var ch in text)
+        {
+            if (ch == '\t')
+            {
+                int n = TabSize - (col % TabSize);
+                sb.Append(' ', n);
+                col += n;
+            }
+            else if (ch == '\n') { sb.Append(ch); col = 0; }
+            else { sb.Append(ch); col++; }
+        }
+        return sb.ToString();
     }
 
     /// <summary>
@@ -322,7 +466,7 @@ public sealed partial class MarkdownTerminalRenderer
     /// with line numbers in a left gutter separated by a vertical rule, and top/bottom borders.
     /// No heavy background fill — the structure (numbers + grid) is what sets it apart from prose.
     /// </summary>
-    private void EmitCodeBlock(List<List<StyledSpan>> codeLines, int indent, string language)
+    private void EmitCodeBlock(List<List<StyledSpan>> codeLines, int indent, string language, int blockId = 0)
     {
         var rule = Theme.CodeBorder;          // border / gutter color
         var numColor = Theme.Muted;           // line-number color
@@ -333,6 +477,7 @@ public sealed partial class MarkdownTerminalRenderer
         string gutter = new string(' ', numWidth + 1);   // gutter width before the '│'
         int frameWidth = Math.Max(20, _width - indent - 1);
         int interior = Math.Max(8, frameWidth - (numWidth + 1) - 2); // minus gutter, "│ "
+        int firstLine = _lines.Count;
 
         // Top border:  ───────┬────────────────
         EmitGridBorder(pad, numWidth, frameWidth, '┬', rule);
@@ -377,6 +522,10 @@ public sealed partial class MarkdownTerminalRenderer
 
         // Bottom border:  ───────┴────────────────
         EmitGridBorder(pad, numWidth, frameWidth, '┴', rule);
+
+        // Tag every row of the block so a background highlighter can restyle it in place.
+        if (blockId != 0)
+            for (int i = firstLine; i < _lines.Count; i++) _lines[i].BlockId = blockId;
     }
 
     /// <summary>Wraps a code line's styled spans to <paramref name="width"/> display columns at

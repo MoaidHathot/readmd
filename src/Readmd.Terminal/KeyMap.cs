@@ -41,6 +41,18 @@ public sealed class KeyMap
     /// <summary>Looks up the action bound to <paramref name="ch"/> (None if unbound).</summary>
     public EditorAction Resolve(char ch) => _map.TryGetValue(ch, out var a) ? a : EditorAction.None;
 
+    /// <summary>The key currently bound to <paramref name="action"/>, for display in help/status text
+    /// (e.g. "space" for ' '); null when the action has no plain-key binding.</summary>
+    public string? KeyFor(EditorAction action)
+    {
+        foreach (var (key, a) in _map)
+            if (a == action) return key == ' ' ? "space" : key.ToString();
+        return null;
+    }
+
+    /// <summary>Like <see cref="KeyFor"/> but falls back to <paramref name="fallback"/> when unbound.</summary>
+    public string Label(EditorAction action, string fallback) => KeyFor(action) ?? fallback;
+
     /// <summary>
     /// Builds a key map from config overrides ("action name" -&gt; key string). Unknown action
     /// names or keys are ignored. An override that rebinds an action moves it off its default key.

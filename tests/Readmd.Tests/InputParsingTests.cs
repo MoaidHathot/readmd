@@ -99,12 +99,96 @@ public class InputParsingTests
     }
 
     [Fact]
-    public void Bare_escape_is_an_escape_key()
+    public void Escape_followed_by_a_char_in_the_same_read_is_alt_key()
     {
-        // ESC followed by a normal char: ESC is its own key, the char follows.
+        // xterm "meta" encoding: Alt+q arrives as ESC q in one read.
         var evs = Parse("\eq");
+        var e = Assert.Single(evs);
+        Assert.Equal(KeyKind.Char, e.Kind);
+        Assert.Equal('q', e.Char);
+        Assert.True(e.Alt);
+    }
+
+    [Fact]
+    public void Lone_escape_at_end_of_input_is_an_escape_key()
+    {
+        var evs = Parse("\e");
+        Assert.Equal(KeyKind.Escape, Assert.Single(evs).Kind);
+    }
+
+    [Fact]
+    public void Csi_modifier_parameters_set_shift_alt_ctrl()
+    {
+        // 1;2 = shift, 1;3 = alt, 1;5 = ctrl, 1;6 = shift+ctrl
+        var shift = Assert.Single(Parse("\e[1;2A"));
+        Assert.Equal(KeyKind.Up, shift.Kind); Assert.True(shift.Shift); Assert.False(shift.Ctrl);
+        var alt = Assert.Single(Parse("\e[1;3C"));
+        Assert.Equal(KeyKind.Right, alt.Kind); Assert.True(alt.Alt);
+        var ctrl = Assert.Single(Parse("\e[1;5D"));
+        Assert.Equal(KeyKind.Left, ctrl.Kind); Assert.True(ctrl.Ctrl);
+        var both = Assert.Single(Parse("\e[5;6~"));
+        Assert.Equal(KeyKind.PageUp, both.Kind); Assert.True(both.Shift); Assert.True(both.Ctrl);
+    }
+
+    [Fact]
+    public void Back_tab_is_shift_tab()
+    {
+        var e = Assert.Single(Parse("\e[Z"));
+        Assert.Equal(KeyKind.Tab, e.Kind);
+        Assert.True(e.Shift);
+    }
+
+    [Fact]
+    public void Delete_insert_and_function_keys_are_decoded()
+    {
+        var evs = Parse("\e[3~\e[2~\eOP\e[15~\e[24~");
+        Assert.Equal(new[] { KeyKind.Delete, KeyKind.Insert, KeyKind.Function, KeyKind.Function, KeyKind.Function }, evs.Select(e => e.Kind));
+        Assert.Equal(new[] { 1, 5, 12 }, evs.Where(e => e.Kind == KeyKind.Function).Select(e => e.Number));
+    }
+
+    [Fact]
+    public void Bracketed_paste_is_a_single_paste_event_not_keystrokes()
+    {
+        // A pasted "q" must not quit: the whole paste arrives as one Paste event with the text.
+        var evs = Parse("\e[200~hello q\nworld\e[201~j");
         Assert.Equal(2, evs.Count);
-        Assert.Equal(KeyKind.Escape, evs[0].Kind);
-        Assert.Equal('q', evs[1].Char);
+        Assert.Equal(KeyKind.Paste, evs[0].Kind);
+        Assert.Equal("hello q\nworld", evs[0].Text);
+        Assert.Equal('j', evs[1].Char);
+    }
+
+    [Fact]
+    public void Window_pixel_size_report_is_swallowed_and_recorded()
+    {
+        // Reply to CSI 14 t: CSI 4 ; height ; width t — must never surface as a 't' keystroke.
+        var evs = Parse("\e[4;600;1200t");
+        Assert.Empty(evs);
+        Assert.Equal((1200, 600), KeyReader.WindowPixelSize);
+        // Reply to CSI 16 t: CSI 6 ; cellH ; cellW t
+        Assert.Empty(Parse("\e[6;20;10t"));
+        Assert.Equal((10, 20), KeyReader.CellPixelSize);
+    }
+
+    [Fact]
+    public void Device_attributes_and_mode_reports_are_swallowed()
+    {
+        Assert.Empty(Parse("\e[?64;1;4;22c"));          // DA1 (Sixel-capable)
+        Assert.Empty(Parse("\e[?2026;2$y"));           // DECRPM
+        Assert.Empty(Parse("\e]11;rgb:1e1e/1e1e/1e1em\e\\")); // OSC 11 reply
+        Assert.Empty(Parse("\e_Gi=1;OK\e\\"));          // kitty graphics reply
+    }
+
+    [Fact]
+    public void Focus_events_are_decoded()
+    {
+        var evs = Parse("\e[I\e[O");
+        Assert.Equal(new[] { KeyKind.FocusIn, KeyKind.FocusOut }, evs.Select(e => e.Kind));
+    }
+
+    [Fact]
+    public void Utf8_multibyte_char_is_one_event()
+    {
+        var evs = KeyReader.ParsePortableForTest(System.Text.Encoding.UTF8.GetBytes("é"));
+        Assert.Equal('é', Assert.Single(evs).Char);
     }
 }

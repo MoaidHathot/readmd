@@ -50,6 +50,15 @@ var printOption = new Option<bool>("--print")
 {
     Description = "Render to stdout and exit (plain text, or ANSI when stdout is a terminal). Implied when stdout is redirected to a pipe or file.",
 };
+var rootOption = new Option<string?>("--root")
+{
+    Description = "Directory that local links and images may reach (default: the document's folder). Lets ../sibling.md links resolve inside a larger wiki.",
+};
+var colorOption = new Option<string?>("--color")
+{
+    Description = "ANSI colour for --print/piped output: auto (default: colour only when stdout is a terminal, honouring NO_COLOR/FORCE_COLOR), always (e.g. for `| less -R`), or never.",
+};
+colorOption.AcceptOnlyFromAmong("auto", "always", "never");
 
 var version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
               ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString()
@@ -67,6 +76,8 @@ var root = new RootCommand("readmd — a terminal-first Markdown viewer with liv
     d2PathOption,
     exportOption,
     printOption,
+    rootOption,
+    colorOption,
 };
 
 // Replace the built-in --version (which prints the bare version) with a branded one that
@@ -114,6 +125,7 @@ root.Subcommands.Add(installPdfCommand);
 
 root.SetAction(async (parse, ct) =>
 {
+    Timing.Mark("args parsed");
     var file = parse.GetValue(fileArgument)!;
     var browser = parse.GetValue(browserOption);
     var port = parse.GetValue(portOption);
@@ -124,6 +136,8 @@ root.SetAction(async (parse, ct) =>
     var d2PathArg = parse.GetValue(d2PathOption);
     var exportPath = parse.GetValue(exportOption);
     var print = parse.GetValue(printOption);
+    var rootArg = parse.GetValue(rootOption);
+    var colorArg = parse.GetValue(colorOption);
 
     var fromStdin = file == "-";
     string full;
@@ -141,8 +155,27 @@ root.SetAction(async (parse, ct) =>
         }
     }
 
+    string? rootDir = null;
+    if (rootArg is not null)
+    {
+        rootDir = Path.GetFullPath(rootArg);
+        if (!Directory.Exists(rootDir))
+        {
+            Console.Error.WriteLine($"readmd: --root directory not found: {rootArg}");
+            return 2;
+        }
+        if (!fromStdin && !new LinkResolver(rootDir).IsInsideRoot(full))
+        {
+            Console.Error.WriteLine($"readmd: the document must be inside --root ({rootDir}).");
+            return 2;
+        }
+    }
+
     // Config: user-level + project-level (.readmd.json) merged; CLI flags take precedence over it.
     var config = ConfigLoader.Load(fromStdin ? null : full);
+    if (ConfigLoader.LastError is { } configError)
+        Console.Error.WriteLine($"readmd: warning — config ignored: {configError}");
+    Timing.Mark("config loaded");
     var themeStr = themeArg ?? config.Theme ?? "auto";
     var backgroundStr = backgroundArg ?? config.Background ?? "terminal";
     var d2Path = d2PathArg ?? config.D2Path;
@@ -204,13 +237,13 @@ root.SetAction(async (parse, ct) =>
         }
         if (shouldPrint)
         {
-            return await RunPrintAsync(full, fromStdin, dark, ct);
+            return await RunPrintAsync(full, fromStdin, dark, ResolveColor(colorArg), ct);
         }
         if (browser)
         {
             return await RunBrowserAsync(full, port, noOpen, diagramTheme, GetDiagrams(), ct);
         }
-        return await RunTerminalAsync(full, dark, diagramTheme, GetDiagrams(), port, solidBackground, customTheme, keyMap, graphicsMode, ct);
+        return await RunTerminalAsync(full, dark, diagramTheme, GetDiagrams(), port, solidBackground, customTheme, keyMap, graphicsMode, rootDir, ct);
     }
     catch (OperationCanceledException)
     {
@@ -246,6 +279,22 @@ static bool ResolveDark(string theme) => theme.ToLowerInvariant() switch
     "dark" => true,
     _ => DetectDark(),   // auto
 };
+
+// Decides whether printed output carries ANSI colour: an explicit --color wins; otherwise colour
+// only when stdout is a terminal, with the de-facto NO_COLOR / FORCE_COLOR / CLICOLOR_FORCE
+// conventions honoured.
+static bool ResolveColor(string? colorArg)
+{
+    switch (colorArg?.ToLowerInvariant())
+    {
+        case "always": return true;
+        case "never": return false;
+    }
+    if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NO_COLOR"))) return false;
+    var force = Environment.GetEnvironmentVariable("FORCE_COLOR") ?? Environment.GetEnvironmentVariable("CLICOLOR_FORCE");
+    if (!string.IsNullOrEmpty(force) && force != "0") return true;
+    return !Console.IsOutputRedirected;
+}
 
 // Best-effort dark/light detection: honor COLORFGBG and common env hints; default to dark.
 static bool DetectDark()
@@ -324,12 +373,16 @@ static async Task<int> RunExportAsync(string full, bool fromStdin, string export
 }
 
 // --print / non-TTY: render to stdout (ANSI when stdout is a terminal, plain text otherwise).
-static async Task<int> RunPrintAsync(string full, bool fromStdin, bool dark, CancellationToken ct)
+static async Task<int> RunPrintAsync(string full, bool fromStdin, bool dark, bool color, CancellationToken ct)
 {
     var markdown = await ReadInputAsync(full, fromStdin, ct);
-    var color = !Console.IsOutputRedirected;
-    var width = color && Console.WindowWidth > 0 ? Console.WindowWidth : 100;
+    Timing.Mark("file read");
+    // Overlap the TextMate registry construction (~35 ms) with the Markdown parse when the document
+    // has fenced code and colour is wanted; it's wasted work otherwise.
+    if (color && (markdown.Contains("```") || markdown.Contains("~~~"))) _ = CodeHighlighter.WarmUpAsync(dark);
+    var width = !Console.IsOutputRedirected && Console.WindowWidth > 0 ? Console.WindowWidth : 100;
     var text = DocumentTextRenderer.Render(markdown, dark, width, color);
+    Timing.Mark("rendered");
     // Write UTF-8 bytes straight to the raw stdout stream so box-drawing/Unicode survives a
     // redirected pipe or file regardless of the console's default code page.
     var bytes = System.Text.Encoding.UTF8.GetBytes(text);
@@ -362,13 +415,14 @@ static async Task<int> RunBrowserAsync(string file, int port, bool noOpen, Diagr
     return 0;
 }
 
-static async Task<int> RunTerminalAsync(string file, bool dark, DiagramTheme theme, IDiagramRenderer diagrams, int port, bool solidBackground, Readmd.Terminal.TerminalTheme? customTheme, Readmd.Terminal.KeyMap keyMap, Readmd.Terminal.GraphicsMode graphicsMode, CancellationToken ct)
+static async Task<int> RunTerminalAsync(string file, bool dark, DiagramTheme theme, IDiagramRenderer diagrams, int port, bool solidBackground, Readmd.Terminal.TerminalTheme? customTheme, Readmd.Terminal.KeyMap keyMap, Readmd.Terminal.GraphicsMode graphicsMode, string? rootDir, CancellationToken ct)
 {
     // One-off browser server spun up by the viewer's 'o' action; tracked so we can dispose it.
     WebViewerServer? sideServer = null;
     await using var viewer = new TerminalViewer(new TerminalViewerOptions
     {
         FilePath = file,
+        Root = rootDir,
         DarkTerminal = dark,
         DiagramTheme = theme,
         SolidBackground = solidBackground,

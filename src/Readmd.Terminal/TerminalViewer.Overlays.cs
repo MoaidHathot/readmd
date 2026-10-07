@@ -203,47 +203,54 @@ public sealed partial class TerminalViewer
     // =====================================================================================
     //  Help overlay (?)
     // =====================================================================================
-    private static readonly (string Heading, (string Keys, string Desc)[] Items)[] HelpSections =
+    // Built from the live key map so remapped keys show their actual binding.
+    private (string Heading, (string Keys, string Desc)[] Items)[] HelpSections()
     {
-        ("MOVE", new[]
-        {
-            ("j  k", "line down / up"),
-            ("Ctrl-d  Ctrl-u", "half page"),
-            ("Ctrl-f  Ctrl-b", "full page"),
-            ("g  G", "top / bottom"),
-            ("wheel", "scroll"),
-        }),
-        ("FIND & GO", new[]
-        {
-            ("/", "search"),
-            ("n  N", "next / prev match"),
-            ("t", "table of contents"),
-            ("1-9", "follow link"),
-            ("<-  ->", "back / forward"),
-        }),
-        ("VIEW", new[]
-        {
-            ("[", "toggle theme"),
-            ("]", "toggle background"),
-            ("Ctrl-wheel", "zoom diagrams"),
-            ("Ctrl-0", "reset zoom"),
-            ("r", "re-render"),
-        }),
-        ("MORE", new[]
-        {
-            ("m", "mark mode (drag = select, right-click = copy)"),
-            ("o", "open in browser"),
-            ("v", "focus image (zoom/pan · o app · b browser)"),
-            ("?", "this help"),
-            ("q", "quit"),
-        }),
-    };
+        var k = _keyMap;
+        string K(EditorAction a, string dflt) => k.Label(a, dflt);
+        return
+        [
+            ("MOVE", new[]
+            {
+                ($"{K(EditorAction.ScrollDown, "j")}  {K(EditorAction.ScrollUp, "k")}", "line down / up (or arrows)"),
+                ("Ctrl-d  Ctrl-u", "half page"),
+                ($"Ctrl-f  {K(EditorAction.PageDown, "space")}  /  Ctrl-b  {K(EditorAction.PageUp, "b")}", "page down / up"),
+                ("gg  G", "top / bottom (Home / End)"),
+                ("wheel", "scroll"),
+            }),
+            ("FIND & GO", new[]
+            {
+                (K(EditorAction.Search, "/"), "search (type to match live)"),
+                ($"{K(EditorAction.SearchNext, "n")}  N", "next / prev match"),
+                (K(EditorAction.Toc, "t"), "table of contents"),
+                ("1-9  Enter", "follow link #n / first visible link"),
+                ("<-  ->  Bksp", "back / forward in history"),
+            }),
+            ("VIEW", new[]
+            {
+                (K(EditorAction.ToggleTheme, "["), "cycle theme"),
+                (K(EditorAction.ToggleBackground, "]"), "toggle solid background"),
+                ("Ctrl-wheel", "zoom diagrams"),
+                ("Ctrl-0", "reset zoom"),
+                (K(EditorAction.Rerender, "r"), "re-render / clear artifacts"),
+            }),
+            ("MORE", new[]
+            {
+                (K(EditorAction.ToggleSelectionMode, "m"), "mark mode (drag = select, right-click = copy)"),
+                (K(EditorAction.OpenInBrowser, "o"), "open in browser"),
+                (K(EditorAction.ViewImage, "v"), "focus image (zoom/pan · o app · b browser)"),
+                (K(EditorAction.Help, "?"), "this help"),
+                ($"{K(EditorAction.Quit, "q")}  Ctrl-c", "quit"),
+            }),
+        ];
+    }
 
     private void DrawHelpOverlay()
     {
         var p = Palette();
         DrawScrim(p);
         _scrimBgCache = _theme.IsDark ? p.PageBg.Darken(0.5) : p.PageBg.Mix(new Rgb(0, 0, 0), 0.42);
+        var sections = HelpSections();
 
         // Column natural width. Within a section every row's keycap is padded to the section's
         // widest keycap, so the description room is (sectionCapW + 3 + desc). Size the column to the
@@ -254,9 +261,9 @@ public sealed partial class TerminalViewer
             int rows = s.Items.Max(it => capW + 3 + it.Desc.Length);
             return Math.Max(LetterSpace(s.Heading).Length, rows);
         }
-        int half = (HelpSections.Length + 1) / 2;
-        var left = HelpSections.Take(half).ToArray();
-        var right = HelpSections.Skip(half).ToArray();
+        int half = (sections.Length + 1) / 2;
+        var left = sections.Take(half).ToArray();
+        var right = sections.Skip(half).ToArray();
 
         int ColW((string Heading, (string Keys, string Desc)[] Items)[] col) =>
             col.Length == 0 ? 0 : col.Max(SectionWidth);

@@ -553,6 +553,39 @@ Sixel
 Front matter
 :   A leading YAML metadata block (delimited by `---`) that is recognized and stripped from the rendered output.
 
+## Edge cases
+
+These exercise rendering details that are easy to get subtly wrong.
+
+- A long list item wraps onto several lines, and the bullet appears only once: Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco.
+- Entities decode: Tom &amp; Jerry, &copy; 2026, 5 &lt; 6, a&nbsp;non-breaking&nbsp;space.
+- An inline line break<br>continues on the next line.
+- Emoji and CJK keep columns aligned: 🚀 日本語 한국어 — search for "日本" to see the highlight land exactly.
+
+a. Alpha-numbered lists keep their letters
+b. and continue correctly
+c. all the way down.
+
+Roman numerals are preserved as well:
+
+i. one
+ii. two
+iii. three
+
+A YouTube "image" is a media embed, so it renders as a playable link instead of a broken picture:
+![readmd intro](https://www.youtube.com/watch?v=dQw4w9WgXcQ)
+
+| Wide table | Column two | Column three | Column four | Column five | Column six |
+| ---------- | ---------- | ------------ | ----------- | ----------- | ---------- |
+| Cells wrap to fit the terminal width instead of being clipped off the right edge of the screen | two | three | four | five | six |
+
+```go
+func tabs() {
+	// Tabs are expanded to spaces so wrapping and clipping stay aligned.
+	fmt.Println("done")
+}
+```
+
 ## Footnotes
 
 Footnotes let you add references[^demo] and asides[^aside] without breaking the flow of reading.

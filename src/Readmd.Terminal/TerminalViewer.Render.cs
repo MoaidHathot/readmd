@@ -153,27 +153,11 @@ public sealed partial class TerminalViewer
             // Width changed: scaled diagram bitmaps and their crops are no longer valid.
             ClearDiagramCaches();
             _forceHardClear = true;
-            // Re-render lines at the new width.
-            try
-            {
-                var markdown = File.ReadAllText(_currentPath);
-                var parsed = ParseToLines(_currentPath, markdown);
-                _lines = parsed.Lines;
-                _links = parsed.Links;
-                _anchors = parsed.Anchors;
-                _pendingDiagrams = parsed.Diagrams;
-                _pendingImages = parsed.Images;
-            }
-            catch { /* keep old layout */ }
-
-            // Re-parsing produced fresh anchors with NO reservation rows; re-reserve for every
-            // already-rendered diagram/image so the layout (and images) stay intact after resize.
-            foreach (var (key, result) in _diagramResults)
-                if (result.Status == DiagramStatus.Ready)
-                    ReserveDiagramRows(key, result);
-            _dirty = true;
+            // Re-render lines at the new width from the in-memory source (no disk read), keeping
+            // reservations for every already-rendered diagram/image.
+            Relayout();
         }
-        RecomputeSearch();
+        if (_searchQuery.Length > 0) RecomputeSearch(jumpToFirst: false);
     }
 
     // ---------------- drawing ----------------
@@ -685,20 +669,24 @@ public sealed partial class TerminalViewer
             if (_selectionMode) left += "  [SELECT]";
         }
 
-        // Pick a help hint that fits the available width (vim keys shown when there's room).
+        // Pick a help hint that fits the available width (vim keys shown when there's room). Built
+        // from the live key map so remapped keys are reflected.
         int width = _screen.Width;
+        var k = _keyMap;
+        string j = k.Label(EditorAction.ScrollDown, "j"), kk = k.Label(EditorAction.ScrollUp, "k");
+        string find = k.Label(EditorAction.Search, "/"), toc = k.Label(EditorAction.Toc, "t"), quit = k.Label(EditorAction.Quit, "q");
         string help = width >= 112
-            ? "j/k·gg/G·mouse move  Ctrl+f/b·d/u page  /:search n/N  t:toc  [:theme ]:bg  r:refresh  o:browser  ?:help  q:quit "
+            ? $"{j}/{kk}·gg/G·mouse move  Ctrl+f/b·d/u page  {find}:search {k.Label(EditorAction.SearchNext, "n")}/N  {toc}:toc  {k.Label(EditorAction.ToggleTheme, "[")}:theme {k.Label(EditorAction.ToggleBackground, "]")}:bg  {k.Label(EditorAction.Rerender, "r")}:refresh  {k.Label(EditorAction.OpenInBrowser, "o")}:browser  {k.Label(EditorAction.Help, "?")}:help  {quit}:quit "
             : width >= 72
-                ? "j/k gg/G  Ctrl+f/b page  /:find  t:toc  [/]:theme/bg  q:quit "
-                : "j/k /:find t:toc q:quit ";
+                ? $"{j}/{kk} gg/G  Ctrl+f/b page  {find}:find  {toc}:toc  {k.Label(EditorAction.ToggleTheme, "[")}/{k.Label(EditorAction.ToggleBackground, "]")}:theme/bg  {quit}:quit "
+                : $"{j}/{kk} {find}:find {toc}:toc {quit}:quit ";
         var sb = new StringBuilder();
         sb.Append(left);
-        int padding = width - left.Length - help.Length;
+        int leftW = TextWidth.Of(left), helpW = TextWidth.Of(help);
+        int padding = width - leftW - helpW;
         if (padding > 0) sb.Append(new string(' ', padding));
-        if (left.Length + help.Length <= width) sb.Append(help);
-        var text = sb.ToString();
-        if (text.Length > width) text = text[..width];
+        if (leftW + helpW <= width) sb.Append(help);
+        var text = TextWidth.TrimToWidth(sb.ToString(), width);
         _screen.Write(text);
         _screen.Reset();
     }

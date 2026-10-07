@@ -16,6 +16,7 @@ public sealed partial class MarkdownTerminalRenderer
 
         // Collect styled spans per row/column.
         var styleRows = new List<List<List<StyledSpan>>>();
+        var headerRows = new List<bool>();
         foreach (var rowObj in table)
         {
             if (rowObj is not TableRow row) continue;
@@ -23,15 +24,12 @@ public sealed partial class MarkdownTerminalRenderer
             foreach (var cellObj in row)
             {
                 if (cellObj is not TableCell cell) continue;
-                var spans = new List<StyledSpan>();
-                foreach (var block in cell)
-                {
-                    if (block is LeafBlock leaf && leaf.Inline is not null)
-                        spans.AddRange(InlineToSpans(leaf.Inline, Theme.Text));
-                }
-                styled.Add(spans);
+                styled.Add(CellToSpans(cell));
+                // Grid tables may span columns: repeat an empty cell so column indices stay aligned.
+                for (int s = 1; s < Math.Max(1, cell.ColumnSpan); s++) styled.Add([]);
             }
             styleRows.Add(styled);
+            headerRows.Add(row.IsHeader);
         }
         if (styleRows.Count == 0) return;
 
@@ -58,11 +56,78 @@ public sealed partial class MarkdownTerminalRenderer
         EmitBorder(pad, widths, '┌', '┬', '┐');
         for (int i = 0; i < styleRows.Count; i++)
         {
-            EmitRowWrapped(pad, widths, styleRows[i], aligns, header: i == 0);
-            if (i == 0) EmitBorder(pad, widths, '├', '┼', '┤');
+            // Pipe tables mark their first row as the header; grid tables flag header rows explicitly
+            // (and may have none, in which case every row is body).
+            bool header = headerRows[i];
+            EmitRowWrapped(pad, widths, styleRows[i], aligns, header);
+            bool last = i + 1 >= styleRows.Count;
+            if (last) continue;
+            // A rule under the header block, and between body rows that contain multi-line content
+            // (block cells read badly when rows run together).
+            if ((header && !headerRows[i + 1]) || (!header && (HasBlockContent(styleRows[i]) || HasBlockContent(styleRows[i + 1]))))
+                EmitBorder(pad, widths, '├', '┼', '┤');
         }
         EmitBorder(pad, widths, '└', '┴', '┘');
         AddBlank();
+    }
+
+    // Multi-line cells (block content) read better with a rule between rows.
+    private static bool HasBlockContent(List<List<StyledSpan>> row) =>
+        row.Any(cell => cell.Any(s => s.Text == "\n"));
+
+    /// <summary>
+    /// Flattens a table cell's blocks into styled spans. Grid-table cells can hold block content
+    /// (several paragraphs, lists, code): paragraphs are separated by a hard break, list items get
+    /// their bullet, and code keeps its lines — so nothing silently disappears.
+    /// </summary>
+    private List<StyledSpan> CellToSpans(TableCell cell)
+    {
+        var spans = new List<StyledSpan>();
+        void Sep() { if (spans.Count > 0 && spans[^1].Text != "\n") spans.Add(new StyledSpan("\n")); }
+        void Walk(Block block, string prefix)
+        {
+            switch (block)
+            {
+                case ListBlock list:
+                {
+                    int n = list.IsOrdered && int.TryParse(list.OrderedStart, out var s) ? s : 1;
+                    foreach (var item in list.OfType<ListItemBlock>())
+                    {
+                        Sep();
+                        spans.Add(new StyledSpan(prefix + (list.IsOrdered ? $"{n++}. " : "• "), Theme.Accent));
+                        bool first = true;
+                        foreach (var child in item)
+                        {
+                            if (!first) Sep();
+                            if (child is LeafBlock leaf && leaf.Inline is not null)
+                                spans.AddRange(InlineToSpans(leaf.Inline, Theme.Text));
+                            else Walk(child, prefix + "  ");
+                            first = false;
+                        }
+                    }
+                    break;
+                }
+                case CodeBlock code:
+                    foreach (var line in code.Lines.ToString().TrimEnd('\n').Split('\n'))
+                    {
+                        Sep();
+                        spans.Add(new StyledSpan(prefix + line, Theme.Code));
+                    }
+                    break;
+                case LeafBlock leaf when leaf.Inline is not null:
+                    Sep();
+                    if (prefix.Length > 0) spans.Add(new StyledSpan(prefix));
+                    spans.AddRange(InlineToSpans(leaf.Inline, Theme.Text));
+                    break;
+                case ContainerBlock container:
+                    foreach (var child in container) Walk(child, prefix);
+                    break;
+            }
+        }
+        foreach (var block in cell) Walk(block, "");
+        // A cell with a single paragraph has no leading separator; strip one if a block was first.
+        if (spans.Count > 0 && spans[0].Text == "\n") spans.RemoveAt(0);
+        return spans;
     }
 
     private void EmitBorder(string pad, int[] widths, char left, char mid, char right)
@@ -120,7 +185,9 @@ public sealed partial class MarkdownTerminalRenderer
                 if (leftPad > 0) line.Spans.Add(new StyledSpan(new string(' ', leftPad)));
                 line.Spans.AddRange(segs);
                 if (rightPad > 0) line.Spans.Add(new StyledSpan(new string(' ', rightPad)));
-                line.Spans.Add(new StyledSpan(" │ ", Theme.Rule));
+                // No trailing space after the last column's rule (keeps the row exactly as wide as
+                // the border rows and avoids a stray cell when copying).
+                line.Spans.Add(new StyledSpan(c == widths.Length - 1 ? " │" : " │ ", Theme.Rule));
             }
             _lines.Add(line);
         }
@@ -137,6 +204,12 @@ public sealed partial class MarkdownTerminalRenderer
 
         foreach (var span in spans)
         {
+            // A hard break (block separator inside a cell) always starts a new visual line.
+            if (span.Text == "\n")
+            {
+                if (current.Count == 0) lines.Add([]); else Flush();
+                continue;
+            }
             // Split each span into word/space tokens so we can wrap at boundaries but keep style.
             foreach (var token in TokenizeKeepSpaces(span.Text))
             {
@@ -204,8 +277,17 @@ public sealed partial class MarkdownTerminalRenderer
         if (sb.Length > 0) yield return sb.ToString();
     }
 
-    private static int CellWidth(List<StyledSpan> spans) =>
-        spans.Sum(s => DisplayWidth(s.Text));
+    /// <summary>Natural width of a cell: the widest of its hard-break-separated lines.</summary>
+    private static int CellWidth(List<StyledSpan> spans)
+    {
+        int best = 0, cur = 0;
+        foreach (var s in spans)
+        {
+            if (s.Text == "\n") { best = Math.Max(best, cur); cur = 0; continue; }
+            cur += DisplayWidth(s.Text);
+        }
+        return Math.Max(best, cur);
+    }
 
     /// <summary>Terminal display width (East-Asian wide / emoji = 2, combining marks = 0).</summary>
     private static int DisplayWidth(string s) => TextWidth.Of(s);

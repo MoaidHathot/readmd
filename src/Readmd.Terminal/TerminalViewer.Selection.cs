@@ -100,8 +100,10 @@ public sealed partial class TerminalViewer
         {
             if (line < 0) continue;
             string text = _lines[line].PlainText;
-            int from = line == sLine ? Math.Min(sCol, text.Length) : 0;
-            int to = line == eLine ? Math.Min(eCol, text.Length) : text.Length;
+            // Selection endpoints are DISPLAY columns (as drawn); map them back to char offsets so
+            // lines containing wide/emoji glyphs copy the text that was actually highlighted.
+            int from = line == sLine ? TextWidth.CharIndexAtColumn(text, sCol) : 0;
+            int to = line == eLine ? TextWidth.CharIndexAtColumn(text, eCol) : text.Length;
             if (to > from) sb.Append(text, from, to - from);
             if (line != eLine) sb.Append('\n');
         }

@@ -79,6 +79,7 @@ public sealed partial class TerminalViewer
                 {
                     _diagramResults[key] = result;
                     if (result.Status == DiagramStatus.Ready) ReserveDiagramRows(key, result);
+                    else ShowDiagramError(key, result.Error, "image error");   // say why it's blank
                     ClearDiagramCaches();
                     _dirty = true;
                 }
@@ -100,6 +101,7 @@ public sealed partial class TerminalViewer
                 {
                     _diagramResults[groupKey] = result;
                     if (result.Status == DiagramStatus.Ready) ReserveDiagramRows(groupKey, result);
+                    else ShowDiagramError(groupKey, result.Error, "image error");
                     ClearDiagramCaches();
                     _forceHardClear = true;
                     _dirty = true;
@@ -154,10 +156,10 @@ public sealed partial class TerminalViewer
     /// Renders a failed diagram's error inline: recolours each anchor caption red and inserts the
     /// wrapped error message on the reserved rows beneath it, so the user sees why nothing rendered.
     /// </summary>
-    private void ShowDiagramError(string key, string? error)
+    private void ShowDiagramError(string key, string? error, string label = "diagram error")
     {
         var list = _lines as List<DisplayLine> ?? _lines.ToList();
-        var msg = string.IsNullOrWhiteSpace(error) ? "diagram could not be rendered" : error!.Trim();
+        var msg = string.IsNullOrWhiteSpace(error) ? "could not be rendered" : error!.Trim();
 
         int width = Math.Max(20, _screen.Width - 6);
         var wrapped = WrapPlain(msg, width);
@@ -175,7 +177,7 @@ public sealed partial class TerminalViewer
             var cap = list[anchor];
             cap.Spans.Clear();
             cap.Spans.Add(new StyledSpan("✖ ", errColor, CellStyle.Bold));
-            cap.Spans.Add(new StyledSpan("diagram error", errColor, CellStyle.Bold));
+            cap.Spans.Add(new StyledSpan(label, errColor, CellStyle.Bold));
 
             // Remove existing reserved rows for this anchor, then insert the error lines.
             int existing = 0;
@@ -219,6 +221,10 @@ public sealed partial class TerminalViewer
     // ---------------- input ----------------
     private void HandleKeyEvent(KeyEvent key)
     {
+        // Focus/paste events outside a text prompt carry no command meaning.
+        if (key.Kind is KeyKind.FocusIn or KeyKind.FocusOut) return;
+        if (key.Kind == KeyKind.Paste && !_searchMode) return;
+
         if (_searchMode) { HandleSearchKey(key); return; }
         if (_tocMode) { HandleTocKey(key); return; }
         if (_focusMode) { HandleFocusKey(key); return; }
@@ -411,33 +417,48 @@ public sealed partial class TerminalViewer
         }
         if (isBackspace)
         {
-            if (_searchQuery.Length > 0) _searchQuery = _searchQuery[..^1];
+            if (_searchQuery.Length > 0)
+            {
+                // Remove one grapheme (not one UTF-16 unit) so emoji/combining input deletes cleanly.
+                var si = new System.Globalization.StringInfo(_searchQuery);
+                _searchQuery = si.LengthInTextElements <= 1 ? "" : si.SubstringByTextElements(0, si.LengthInTextElements - 1);
+            }
             RecomputeSearch();
             return;
         }
-        // Printable character (ignore control chars and Ctrl combos).
-        if (key.Kind == KeyKind.Char && !key.Ctrl && !char.IsControl(key.Char))
+        // Pasted text goes into the query verbatim (first line only — a query is single-line).
+        if (key.Kind == KeyKind.Paste && key.Text is { Length: > 0 } pasted)
         {
-            _searchQuery += key.Char;
+            var firstLine = pasted.Split('\n')[0].TrimEnd('\r');
+            if (firstLine.Length > 0) { _searchQuery += firstLine; RecomputeSearch(); }
+            return;
+        }
+        // Printable character (ignore control chars and Ctrl combos).
+        if (key.Kind == KeyKind.Char && !key.Ctrl && !key.Alt && !char.IsControl(key.Char))
+        {
+            _searchQuery += key.Text ?? key.Char.ToString();
             RecomputeSearch();
         }
     }
 
-    private void RecomputeSearch()
+    private void RecomputeSearch(bool jumpToFirst = true)
     {
         _searchHits.Clear();
         _searchHitIndex = -1;
         if (_searchQuery.Length >= 1)
         {
-            var q = _searchQuery.ToLowerInvariant();
+            var q = _searchQuery;
             for (int i = 0; i < _lines.Count; i++)
             {
                 var text = _lines[i].PlainText;
-                var lower = text.ToLowerInvariant();
                 int idx = 0;
-                while ((idx = lower.IndexOf(q, idx, StringComparison.Ordinal)) >= 0)
+                while ((idx = text.IndexOf(q, idx, StringComparison.OrdinalIgnoreCase)) >= 0)
                 {
-                    _searchHits.Add((i, idx, _searchQuery.Length));
+                    // Hits are stored in DISPLAY columns (wide/emoji glyphs are two cells) so the
+                    // highlight lands exactly where the match is drawn, not shifted right of it.
+                    int col = TextWidth.OfPrefix(text, idx);
+                    int len = TextWidth.Of(text.Substring(idx, q.Length));
+                    _searchHits.Add((i, col, Math.Max(1, len)));
                     idx += q.Length;
                 }
             }
@@ -446,7 +467,7 @@ public sealed partial class TerminalViewer
                 // pick the first hit at or after current scroll
                 _searchHitIndex = _searchHits.FindIndex(h => h.Line >= _scroll);
                 if (_searchHitIndex < 0) _searchHitIndex = 0;
-                ScrollToHit(_searchHitIndex);
+                if (jumpToFirst) ScrollToHit(_searchHitIndex);
             }
         }
         _dirty = true;
@@ -666,45 +687,32 @@ public sealed partial class TerminalViewer
     {
         lock (_stateLock)
         {
-            int savedScroll = _scroll;   // preserve the reading position across the re-render
-            _theme = TerminalTheme.For(!_theme.IsDark);
+            // Cycle: custom (from config, if any) → dark → light → custom … so a configured palette is
+            // never lost by pressing '[' — it comes back around.
+            var custom = _options.Theme;
+            TerminalTheme next;
+            if (custom is not null && ReferenceEquals(_theme, custom)) next = TerminalTheme.Dark;
+            else if (ReferenceEquals(_theme, TerminalTheme.Dark)) next = TerminalTheme.Light;
+            else if (ReferenceEquals(_theme, TerminalTheme.Light)) next = custom ?? TerminalTheme.Dark;
+            else next = TerminalTheme.For(!_theme.IsDark);
+            _theme = next;
             _diagramTheme = _theme.IsDark ? DiagramTheme.Dark : DiagramTheme.Light;
             // Diagram/image colors are theme-dependent: drop the rendered-bitmap caches so they
             // re-encode for the new theme, but KEEP the source results so images stay on screen
             // (the diagrams will be re-requested for the new theme below).
             ClearDiagramCaches();
             _forceHardClear = true;
-            try
-            {
-                var markdown = File.ReadAllText(_currentPath);
-                var parsed = ParseToLines(_currentPath, markdown);
-                _lines = parsed.Lines;
-                _links = parsed.Links;
-                _anchors = parsed.Anchors;
-                _pendingDiagrams = parsed.Diagrams;
-                _pendingImages = parsed.Images;
-                _pendingImageGroups = parsed.ImageGroups;
-            }
-            catch { /* keep old layout */ }
-
-            // Re-reserve rows for the diagrams/images we already have so the layout (and the images
-            // themselves) stay intact. Don't let the reservation shift scroll — we restore it below.
-            foreach (var (key, result) in _diagramResults)
-                if (result.Status == DiagramStatus.Ready)
-                    ReserveDiagramRows(key, result, adjustScroll: false);
-
-            // Restore the reading position (the re-parse + re-reserve reproduces the same layout).
-            _scroll = Math.Clamp(savedScroll, 0, Math.Max(0, _lines.Count - 1));
+            Relayout();
 
             // Diagrams (mermaid/D2) are themed: re-request them in the background but KEEP the old
             // image on screen until the new one arrives, so they don't blink out. Images aren't
             // themed, so they just keep their existing result.
             foreach (var key in _pendingDiagrams.Keys)
                 _diagramRequested.Remove(key);
-            _dirty = true;
         }
         KickoffDiagramRenders(forceDiagramRerender: true);
-        SetStatus(_theme.IsDark ? "Theme: dark" : "Theme: light", 1.5);
+        var name = _options.Theme is not null && ReferenceEquals(_theme, _options.Theme) ? "custom" : (_theme.IsDark ? "dark" : "light");
+        SetStatus("Theme: " + name, 1.5);
     }
 
     private void ToggleSolidBackground()
@@ -723,32 +731,12 @@ public sealed partial class TerminalViewer
     /// </summary>
     private void Rerender()
     {
-        int savedScroll = _scroll;
         lock (_stateLock)
         {
             ClearDiagramCaches();
             _forceHardClear = true;
             _refreshWipe = true;   // clean-wipe: clear-only frame, then repaint (clears Sixel artifacts)
-            try
-            {
-                var markdown = File.ReadAllText(_currentPath);
-                var parsed = ParseToLines(_currentPath, markdown);
-                _lines = parsed.Lines;
-                _links = parsed.Links;
-                _anchors = parsed.Anchors;
-                _pendingDiagrams = parsed.Diagrams;
-                _pendingImages = parsed.Images;
-                _pendingImageGroups = parsed.ImageGroups;
-            }
-            catch { /* keep old layout */ }
-
-            // Re-reserve rows for everything already rendered (don't shift scroll; we restore it).
-            foreach (var (key, result) in _diagramResults)
-                if (result.Status == DiagramStatus.Ready)
-                    ReserveDiagramRows(key, result, adjustScroll: false);
-
-            _scroll = Math.Clamp(savedScroll, 0, Math.Max(0, _lines.Count - 1));
-            _dirty = true;
+            Relayout();
         }
         // Re-request anything still pending (or that failed before).
         KickoffDiagramRenders();

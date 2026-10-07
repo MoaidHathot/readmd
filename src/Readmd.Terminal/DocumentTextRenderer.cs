@@ -15,12 +15,14 @@ public static class DocumentTextRenderer
     public static string Render(string markdown, bool dark, int width, bool color)
     {
         var theme = TerminalTheme.For(dark);
-        // Parse once with the terminal pipeline, then derive TOC/front-matter from that same AST —
+        // Parse once with the terminal pipeline, then derive TOC/front-matter from that same AST -
         // no second parse and no HTML render (which the text output never displays).
-        var ast = Markdown.Parse(markdown, TerminalPipeline.Instance);
-        var meta = MarkdownRenderer.ExtractMetadata(ast, "stdin.md");
-        var renderer = new MarkdownTerminalRenderer(theme, Math.Max(20, width) - 1);
-        var result = renderer.Render(ast, meta.Toc, meta.FrontMatter);
+        var ast = Timing.Measure("parse", () => Markdown.Parse(markdown, TerminalPipeline.Instance));
+        var meta = Timing.Measure("metadata", () => MarkdownRenderer.ExtractMetadata(ast, "stdin.md"));
+        // Plain output carries no colour, so syntax highlighting (the slowest part of layout) would be
+        // pure waste: defer it and simply never run the deferred work.
+        var renderer = new MarkdownTerminalRenderer(theme, Math.Max(20, width) - 1) { DeferHighlighting = !color };
+        var result = Timing.Measure("layout", () => renderer.Render(ast, meta.Toc, meta.FrontMatter));
 
         var sb = new StringBuilder();
         foreach (var line in result.Lines)

@@ -59,6 +59,9 @@ public static class TocExtractor
             case CodeInline code:
                 sb.Append(code.Content);
                 break;
+            case HtmlEntityInline entity:
+                sb.Append(entity.Transcoded.AsSpan());
+                break;
             case LineBreakInline:
                 sb.Append(' ');
                 break;

@@ -43,6 +43,10 @@ Options:
         (-o)           extension: .html (single file, assets inlined) or .pdf.
       --print          Render to stdout and exit (plain text, or ANSI on a TTY).
                        Implied when stdout is a pipe/file, or when reading stdin.
+      --color <mode>   auto (default; honors NO_COLOR / FORCE_COLOR), always
+                       (e.g. `readmd f.md --color always | less -R`), or never.
+      --root <dir>     Directory local links/images may reach (default: the
+                       document's folder), so ../sibling.md links work in a wiki.
       --theme <theme>  Color theme: dark, light, or auto (auto honors COLORFGBG,
                        else defaults to dark).
       --background <b>  'solid' paints a solid themed background (overrides terminal
@@ -64,13 +68,16 @@ readmd is pipeline-friendly. When stdout is redirected (or you read from stdin),
 it renders to text instead of starting the interactive UI:
 
 ```bash
-readmd report.md | less -R              # paged, ANSI-colored when the pager is a TTY
+readmd report.md --color always | less -R   # paged, ANSI-colored
 readmd report.md > report.txt           # plain text (styles stripped)
 cat report.md | readmd -                # render from stdin
 readmd report.md --export report.html   # one self-contained HTML file (assets inlined)
 readmd report.md --export report.pdf    # WYSIWYG PDF (see below)
 readmd install-pdf                      # one-time: provision the browser used for PDF export
 ```
+
+Plain (non-TTY) output skips syntax highlighting entirely, so piping a large document is fast.
+Set `READMD_TIMING=1` to print per-phase timings (config, parse, layout, highlighting) to stderr.
 
 Exported HTML is fully standalone: CSS, JavaScript and KaTeX fonts are inlined,
 local images become data URIs, D2 diagrams are pre-rendered to inline SVG, and
@@ -97,7 +104,7 @@ Vim-style motions are supported throughout, plus the mouse wheel scrolls.
 | `Ctrl+e` / `Ctrl+y` | Scroll one line (vim) | `n` / `N` | Next / previous match |
 | `Ctrl+d` / `Ctrl+u` | Half page | `←` / `→` (or `Backspace`) | Back / forward (history) |
 | `Ctrl+f` / `Ctrl+b` | Full page | `t` | Table-of-contents overlay |
-| `Space` / `b` | Page down / up | `Enter`, `1`–`9` | Follow a visible link |
+| `Space` / `b` | Page down / up | `Enter`, `1`–`9` | Follow a link (first visible / link #n by its superscript) |
 | `gg` / `G` | Top / bottom | click / `Ctrl`+click | Follow a link (Ctrl skips the confirm) |
 | `Home` / `End` | Top / bottom | `[` | Toggle light / dark theme |
 | `o` | Open in browser | `]` | Toggle solid / transparent background |

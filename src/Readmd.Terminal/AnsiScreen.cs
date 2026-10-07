@@ -41,9 +41,11 @@ public sealed class AnsiScreen : IDisposable
         EnterRawModeUnix();
         Console.OutputEncoding = Encoding.UTF8;
         _stdout = Console.OpenStandardOutput();
-        // Enter alt screen, hide cursor, clear. On non-Windows also enable SGR mouse reporting
-        // (button + drag) so KeyReader can parse wheel/click/drag; Windows uses the console API.
-        WriteRaw("\e[?1049h\e[?25l\e[2J\e[H");
+        // Enter alt screen, hide cursor, clear. Enable bracketed paste (so pasted text can't be
+        // misread as keystrokes — a pasted 'q' must not quit) and focus reporting. On non-Windows
+        // also enable SGR mouse reporting (button + drag) so KeyReader can parse wheel/click/drag;
+        // Windows uses the console API for the mouse.
+        WriteRaw("\e[?1049h\e[?25l\e[2J\e[H\e[?2004h\e[?1004h");
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             WriteRaw("\e[?1000h\e[?1002h\e[?1006h");
         Flush();
@@ -179,10 +181,11 @@ public sealed class AnsiScreen : IDisposable
         _restored = true;
         AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
         Console.CancelKeyPress -= OnCancelKeyPress;
-        // Disable SGR mouse reporting (non-Windows), show cursor, leave alt screen, reset.
+        // Disable SGR mouse reporting (non-Windows), paste/focus reporting, show cursor, leave alt
+        // screen, reset.
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             WriteRaw("\e[?1006l\e[?1002l\e[?1000l");
-        WriteRaw("\e[0m\e[?25h\e[?1049l");
+        WriteRaw("\e[?2004l\e[?1004l\e[0m\e[?25h\e[?1049l");
         RestoreRawModeUnix();
     }
 
