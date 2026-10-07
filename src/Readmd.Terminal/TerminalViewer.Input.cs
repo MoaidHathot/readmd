@@ -584,6 +584,7 @@ public sealed partial class TerminalViewer
         int lineIndex = _scroll + screenRow;
         if (lineIndex < 0 || lineIndex >= _lines.Count) return;
         var line = _lines[lineIndex];
+        screenCol -= ContentOffset;   // content may be centred when a reading width is set
 
         // 1) Click directly on a link span (text links and clickable image captions). Columns are
         //    measured in display width (wide/emoji glyphs occupy two cells), matching how the line is

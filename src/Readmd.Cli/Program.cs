@@ -59,6 +59,10 @@ var colorOption = new Option<string?>("--color")
     Description = "ANSI colour for --print/piped output: auto (default: colour only when stdout is a terminal, honouring NO_COLOR/FORCE_COLOR), always (e.g. for `| less -R`), or never.",
 };
 colorOption.AcceptOnlyFromAmong("auto", "always", "never");
+var widthOption = new Option<int?>("--width", ["-w"])
+{
+    Description = "Maximum reading width in columns (content is centred when the terminal is wider); also the wrap width for --print. Default: full width (config: maxWidth).",
+};
 
 var version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
               ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString()
@@ -78,6 +82,7 @@ var root = new RootCommand("readmd — a terminal-first Markdown viewer with liv
     printOption,
     rootOption,
     colorOption,
+    widthOption,
 };
 
 // Replace the built-in --version (which prints the bare version) with a branded one that
@@ -138,6 +143,7 @@ root.SetAction(async (parse, ct) =>
     var print = parse.GetValue(printOption);
     var rootArg = parse.GetValue(rootOption);
     var colorArg = parse.GetValue(colorOption);
+    var widthArg = parse.GetValue(widthOption);
 
     var fromStdin = file == "-";
     string full;
@@ -211,6 +217,16 @@ root.SetAction(async (parse, ct) =>
     var diagramTheme = dark ? DiagramTheme.Dark : DiagramTheme.Light;
     var keyMap = Readmd.Terminal.KeyMap.FromConfig(config.Keys);
     var graphicsMode = Readmd.Terminal.TerminalCapabilities.Resolve(config.Graphics);
+    var layout = new LayoutSettings(
+        MaxWidth: Math.Max(0, widthArg ?? config.MaxWidth ?? 0),
+        LineNumbers: config.LineNumbers ?? true,
+        TabSize: Math.Clamp(config.TabSize ?? 4, 1, 16),
+        SmartPunctuation: config.SmartPunctuation ?? false);
+    if (widthArg is < 20)
+    {
+        Console.Error.WriteLine("readmd: --width must be at least 20 columns.");
+        return 2;
+    }
 
     // The diagram renderer is created lazily, only for the paths that actually render diagrams
     // (terminal / browser / export). --print and stdin text output never touch it, so they skip
@@ -237,13 +253,13 @@ root.SetAction(async (parse, ct) =>
         }
         if (shouldPrint)
         {
-            return await RunPrintAsync(full, fromStdin, dark, ResolveColor(colorArg), ct);
+            return await RunPrintAsync(full, fromStdin, dark, ResolveColor(colorArg), layout, ct);
         }
         if (browser)
         {
             return await RunBrowserAsync(full, port, noOpen, diagramTheme, GetDiagrams(), ct);
         }
-        return await RunTerminalAsync(full, dark, diagramTheme, GetDiagrams(), port, solidBackground, customTheme, keyMap, graphicsMode, rootDir, ct);
+        return await RunTerminalAsync(full, dark, diagramTheme, GetDiagrams(), port, solidBackground, customTheme, keyMap, graphicsMode, rootDir, layout, ct);
     }
     catch (OperationCanceledException)
     {
@@ -373,7 +389,7 @@ static async Task<int> RunExportAsync(string full, bool fromStdin, string export
 }
 
 // --print / non-TTY: render to stdout (ANSI when stdout is a terminal, plain text otherwise).
-static async Task<int> RunPrintAsync(string full, bool fromStdin, bool dark, bool color, CancellationToken ct)
+static async Task<int> RunPrintAsync(string full, bool fromStdin, bool dark, bool color, LayoutSettings layout, CancellationToken ct)
 {
     var markdown = await ReadInputAsync(full, fromStdin, ct);
     Timing.Mark("file read");
@@ -381,7 +397,8 @@ static async Task<int> RunPrintAsync(string full, bool fromStdin, bool dark, boo
     // has fenced code and colour is wanted; it's wasted work otherwise.
     if (color && (markdown.Contains("```") || markdown.Contains("~~~"))) _ = CodeHighlighter.WarmUpAsync(dark);
     var width = !Console.IsOutputRedirected && Console.WindowWidth > 0 ? Console.WindowWidth : 100;
-    var text = DocumentTextRenderer.Render(markdown, dark, width, color);
+    if (layout.MaxWidth > 0) width = Math.Min(width, layout.MaxWidth + 1);
+    var text = DocumentTextRenderer.Render(markdown, dark, width, color, new DocumentTextRenderer.Options(layout.LineNumbers, layout.TabSize, layout.SmartPunctuation));
     Timing.Mark("rendered");
     // Write UTF-8 bytes straight to the raw stdout stream so box-drawing/Unicode survives a
     // redirected pipe or file regardless of the console's default code page.
@@ -415,7 +432,7 @@ static async Task<int> RunBrowserAsync(string file, int port, bool noOpen, Diagr
     return 0;
 }
 
-static async Task<int> RunTerminalAsync(string file, bool dark, DiagramTheme theme, IDiagramRenderer diagrams, int port, bool solidBackground, Readmd.Terminal.TerminalTheme? customTheme, Readmd.Terminal.KeyMap keyMap, Readmd.Terminal.GraphicsMode graphicsMode, string? rootDir, CancellationToken ct)
+static async Task<int> RunTerminalAsync(string file, bool dark, DiagramTheme theme, IDiagramRenderer diagrams, int port, bool solidBackground, Readmd.Terminal.TerminalTheme? customTheme, Readmd.Terminal.KeyMap keyMap, Readmd.Terminal.GraphicsMode graphicsMode, string? rootDir, LayoutSettings layout, CancellationToken ct)
 {
     // One-off browser server spun up by the viewer's 'o' action; tracked so we can dispose it.
     WebViewerServer? sideServer = null;
@@ -424,6 +441,10 @@ static async Task<int> RunTerminalAsync(string file, bool dark, DiagramTheme the
         FilePath = file,
         Root = rootDir,
         DarkTerminal = dark,
+        MaxWidth = layout.MaxWidth,
+        LineNumbers = layout.LineNumbers,
+        TabSize = layout.TabSize,
+        SmartPunctuation = layout.SmartPunctuation,
         DiagramTheme = theme,
         SolidBackground = solidBackground,
         Theme = customTheme,
@@ -470,3 +491,6 @@ internal sealed class PrintVersionAction(string version) : SynchronousCommandLin
         return 0;
     }
 }
+
+/// <summary>Layout settings resolved from flags + config, shared by the terminal and print paths.</summary>
+internal sealed record LayoutSettings(int MaxWidth, bool LineNumbers, int TabSize, bool SmartPunctuation);

@@ -75,6 +75,9 @@ public sealed class DisplayLine
     public int DiagramRows { get; set; }
     public int DiagramCols { get; set; }
 
+    /// <summary>Column at which the image/diagram for this anchor is drawn (its block indentation).</summary>
+    public int DiagramIndent { get; set; }
+
     /// <summary>
     /// If this is a clickable image anchor (image wrapped in a link), the link id to follow when
     /// the anchor or its image area is clicked.

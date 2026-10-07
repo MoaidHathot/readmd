@@ -1,5 +1,6 @@
 using Markdig.Extensions.Alerts;
 using Markdig.Extensions.Tables;
+using Markdig.Renderers.Html;
 using Markdig.Syntax;
 using Readmd.Core;
 
@@ -135,8 +136,7 @@ public sealed partial class MarkdownTerminalRenderer
                 {
                     // The marker is a hanging gutter: continuation lines of a wrapped item align under
                     // the item text, not under the bullet (so bullets never repeat mid-item).
-                    var spans = InlineToSpans(para.Inline, Theme.Text);
-                    EmitWrapped(spans, childIndent, sourceLine: para.Line + 1, gutterColor: Theme.Accent, gutter: marker, repeatGutter: false);
+                    EmitInlineBlock(para.Inline, childIndent, sourceLine: para.Line + 1, gutterColor: Theme.Accent, gutter: marker, repeatGutter: false);
                     firstChild = false;
                 }
                 else if (firstChild)
@@ -232,8 +232,7 @@ public sealed partial class MarkdownTerminalRenderer
         {
             if (child is LeafBlock leaf && leaf.Inline is not null)
             {
-                var spans = InlineToSpans(leaf.Inline, Theme.Quote, CellStyle.Italic);
-                EmitWrapped(spans, indent + 2, gutterColor: Theme.Rule, gutter: "▌ ");
+                EmitInlineBlock(leaf.Inline, indent + 2, sourceLine: leaf.Line + 1, baseColor: Theme.Quote, baseStyle: CellStyle.Italic, gutterColor: Theme.Rule, gutter: "▌ ");
             }
             else
             {
@@ -275,8 +274,7 @@ public sealed partial class MarkdownTerminalRenderer
         {
             if (child is LeafBlock leaf && leaf.Inline is not null)
             {
-                var spans = InlineToSpans(leaf.Inline, Theme.Text);
-                EmitWrapped(spans, indent + 2, gutterColor: color, gutter: "▌ ");
+                EmitInlineBlock(leaf.Inline, indent + 2, sourceLine: leaf.Line + 1, gutterColor: color, gutter: "▌ ");
             }
             else
             {
@@ -317,8 +315,7 @@ public sealed partial class MarkdownTerminalRenderer
                 {
                     // The number is a hanging gutter on the first paragraph; later paragraphs and
                     // wrapped continuation lines align under the note text.
-                    var spans = InlineToSpans(leaf.Inline, Theme.Text);
-                    EmitWrapped(spans, 2 + num.Length, gutterColor: Theme.Accent,
+                    EmitInlineBlock(leaf.Inline, 2 + num.Length, sourceLine: leaf.Line + 1, gutterColor: Theme.Accent,
                         gutter: first ? num : null, repeatGutter: false);
                     first = false;
                 }
@@ -349,8 +346,7 @@ public sealed partial class MarkdownTerminalRenderer
                 }
                 else if (child is Markdig.Syntax.LeafBlock leaf && leaf.Inline is not null)
                 {
-                    var spans = InlineToSpans(leaf.Inline, Theme.Text);
-                    EmitWrapped(spans, indent + 2, gutterColor: Theme.Accent, gutter: ": ", repeatGutter: false);
+                    EmitInlineBlock(leaf.Inline, indent + 2, sourceLine: leaf.Line + 1, gutterColor: Theme.Accent, gutter: ": ", repeatGutter: false);
                 }
                 else
                 {
@@ -373,11 +369,80 @@ public sealed partial class MarkdownTerminalRenderer
             return;
         }
 
+        var language = (fenced.Info ?? "").Trim();
+        // GitHub renders ```math (and ```latex / ```tex) fences as display math.
+        if (language.Equals("math", StringComparison.OrdinalIgnoreCase) || language.Equals("latex", StringComparison.OrdinalIgnoreCase) || language.Equals("tex", StringComparison.OrdinalIgnoreCase))
+        {
+            EmitMathBlock(fenced.Lines.ToString(), indent);
+            return;
+        }
+
         EnsureBlankBefore();
         var code = ExpandTabs(fenced.Lines.ToString().TrimEnd('\n'));
-        var language = (fenced.Info ?? "").Trim();
-        EmitHighlightedOrDeferred(code, language, indent);
+        var opts = CodeBlockOptions.Parse(fenced.Arguments, fenced.TryGetAttributes());
+        EmitHighlightedOrDeferred(code, language, indent, opts);
         AddBlank();
+    }
+
+    /// <summary>
+    /// Presentation options carried on a fence's info string after the language — the common
+    /// Docusaurus/MkDocs/Markdig conventions: <c>title="file.cs"</c> (or <c>filename=</c>), highlighted
+    /// line ranges <c>{1,3-5}</c> / <c>hl_lines="1 3-5"</c>, and <c>showLineNumbers</c>/<c>nonums</c>.
+    /// </summary>
+    public sealed record CodeBlockOptions(string? Title, HashSet<int>? HighlightLines, bool? LineNumbers)
+    {
+        public static readonly CodeBlockOptions None = new(null, null, null);
+
+        public static CodeBlockOptions Parse(string? arguments, Markdig.Renderers.Html.HtmlAttributes? attributes)
+        {
+            string? title = null;
+            HashSet<int>? lines = null;
+            bool? numbers = null;
+
+            void Range(string spec)
+            {
+                foreach (var part in spec.Split([',', ' '], StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var p = part.Trim();
+                    int dash = p.IndexOf('-');
+                    if (dash > 0 && int.TryParse(p[..dash], out var a) && int.TryParse(p[(dash + 1)..], out var b))
+                    {
+                        lines ??= [];
+                        for (int i = Math.Min(a, b); i <= Math.Max(a, b) && i - Math.Min(a, b) < 10_000; i++) lines.Add(i);
+                    }
+                    else if (int.TryParse(p, out var n)) { lines ??= []; lines.Add(n); }
+                }
+            }
+
+            if (attributes?.Properties is { } props)
+            {
+                foreach (var (k, v) in props)
+                {
+                    if (k.Equals("title", StringComparison.OrdinalIgnoreCase) || k.Equals("filename", StringComparison.OrdinalIgnoreCase)) title = v;
+                    else if (k.Equals("hl_lines", StringComparison.OrdinalIgnoreCase) || k.Equals("highlight", StringComparison.OrdinalIgnoreCase)) Range(v ?? "");
+                    else if (k.Equals("linenos", StringComparison.OrdinalIgnoreCase) || k.Equals("showLineNumbers", StringComparison.OrdinalIgnoreCase)) numbers = v is null || v != "false";
+                }
+            }
+            if (!string.IsNullOrWhiteSpace(arguments))
+            {
+                foreach (System.Text.RegularExpressions.Match m in ArgRegex.Matches(arguments))
+                {
+                    if (m.Groups["range"].Success) { Range(m.Groups["range"].Value); continue; }
+                    var key = m.Groups["key"].Value;
+                    var val = m.Groups["dq"].Success ? m.Groups["dq"].Value : m.Groups["sq"].Success ? m.Groups["sq"].Value : m.Groups["bare"].Value;
+                    if (key.Length == 0) { if (val.Equals("showLineNumbers", StringComparison.OrdinalIgnoreCase) || val.Equals("linenos", StringComparison.OrdinalIgnoreCase)) numbers = true; else if (val.Equals("nonums", StringComparison.OrdinalIgnoreCase) || val.Equals("nolinenos", StringComparison.OrdinalIgnoreCase)) numbers = false; continue; }
+                    if (key.Equals("title", StringComparison.OrdinalIgnoreCase) || key.Equals("filename", StringComparison.OrdinalIgnoreCase) || key.Equals("file", StringComparison.OrdinalIgnoreCase)) title = val;
+                    else if (key.Equals("hl_lines", StringComparison.OrdinalIgnoreCase) || key.Equals("highlight", StringComparison.OrdinalIgnoreCase)) Range(val.Trim('{', '}'));
+                    else if (key.Equals("showLineNumbers", StringComparison.OrdinalIgnoreCase) || key.Equals("linenos", StringComparison.OrdinalIgnoreCase)) numbers = val != "false";
+                }
+            }
+            if (title is null && lines is null && numbers is null) return None;
+            return new CodeBlockOptions(title, lines, numbers);
+        }
+
+        private static readonly System.Text.RegularExpressions.Regex ArgRegex = new(
+            @"\{(?<range>[\d,\s\-]+)\}|(?:(?<key>[\w:-]+)\s*=\s*)?(?:""(?<dq>[^""]*)""|'(?<sq>[^']*)'|(?<bare>[^\s""']+))",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
     }
 
     /// <summary>
@@ -386,8 +451,9 @@ public sealed partial class MarkdownTerminalRenderer
     /// <see cref="PendingHighlights"/>; the viewer restyles the lines in place once the background
     /// highlighter finishes. Synchronous callers (print/export) get the final colours directly.
     /// </summary>
-    private void EmitHighlightedOrDeferred(string code, string language, int indent)
+    private void EmitHighlightedOrDeferred(string code, string language, int indent, CodeBlockOptions? options = null)
     {
+        options ??= CodeBlockOptions.None;
         int blockId = ++_blockCounter;
         List<List<StyledSpan>> spans;
         var cached = CodeHighlighter.TryGetCached(code, language, Theme);
@@ -395,17 +461,20 @@ public sealed partial class MarkdownTerminalRenderer
         else if (DeferHighlighting && CodeHighlighter.HasGrammar(language))
         {
             spans = CodeHighlighter.Plain(code, Theme);
-            _pendingHighlights.Add(new PendingHighlight(blockId, code, language, indent));
+            _pendingHighlights.Add(new PendingHighlight(blockId, code, language, indent, options));
         }
         else spans = CodeHighlighter.Highlight(code, language, Theme);
-        EmitCodeBlock(spans, indent, language, blockId);
+        EmitCodeBlock(spans, indent, language, blockId, options);
     }
 
     /// <summary>When true, code blocks are emitted unhighlighted and queued for background highlighting.</summary>
     public bool DeferHighlighting { get; init; }
 
+    /// <summary>Whether code blocks show a line-number gutter by default (a fence can override).</summary>
+    public bool LineNumbers { get; init; } = true;
+
     /// <summary>A code block emitted in plain colour that still needs syntax highlighting.</summary>
-    public sealed record PendingHighlight(int BlockId, string Code, string Language, int Indent);
+    public sealed record PendingHighlight(int BlockId, string Code, string Language, int Indent, CodeBlockOptions Options);
 
     private readonly List<PendingHighlight> _pendingHighlights = [];
     public IReadOnlyList<PendingHighlight> PendingHighlights => _pendingHighlights;
@@ -417,10 +486,10 @@ public sealed partial class MarkdownTerminalRenderer
     /// untouched). Row structure is identical because wrapping depends only on display width.
     /// </summary>
     public static void ApplyHighlight(IReadOnlyList<DisplayLine> blockLines, PendingHighlight pending,
-        List<List<StyledSpan>> highlighted, TerminalTheme theme, int width)
+        List<List<StyledSpan>> highlighted, TerminalTheme theme, int width, bool lineNumbers = true)
     {
-        var scratch = new MarkdownTerminalRenderer(theme, width);
-        scratch.EmitCodeBlock(highlighted, pending.Indent, pending.Language, pending.BlockId);
+        var scratch = new MarkdownTerminalRenderer(theme, width) { LineNumbers = lineNumbers };
+        scratch.EmitCodeBlock(highlighted, pending.Indent, pending.Language, pending.BlockId, pending.Options);
         if (scratch._lines.Count != blockLines.Count) return;   // layout mismatch: leave plain
         for (int i = 0; i < blockLines.Count; i++)
             blockLines[i].ReplaceSpans(scratch._lines[i].Spans);
@@ -466,30 +535,41 @@ public sealed partial class MarkdownTerminalRenderer
     /// with line numbers in a left gutter separated by a vertical rule, and top/bottom borders.
     /// No heavy background fill — the structure (numbers + grid) is what sets it apart from prose.
     /// </summary>
-    private void EmitCodeBlock(List<List<StyledSpan>> codeLines, int indent, string language, int blockId = 0)
+    private void EmitCodeBlock(List<List<StyledSpan>> codeLines, int indent, string language, int blockId = 0, CodeBlockOptions? options = null)
     {
+        options ??= CodeBlockOptions.None;
         var rule = Theme.CodeBorder;          // border / gutter color
         var numColor = Theme.Muted;           // line-number color
         string pad = indent > 0 ? new string(' ', indent) : "";
+        bool numbers = options.LineNumbers ?? LineNumbers;
 
         int lineCount = codeLines.Count;
-        int numWidth = Math.Max(2, lineCount.ToString().Length);
+        // Without line numbers the gutter is a single blank cell (keeps the │ frame).
+        int numWidth = numbers ? Math.Max(2, lineCount.ToString().Length) : 0;
         string gutter = new string(' ', numWidth + 1);   // gutter width before the '│'
         int frameWidth = Math.Max(20, _width - indent - 1);
         int interior = Math.Max(8, frameWidth - (numWidth + 1) - 2); // minus gutter, "│ "
         int firstLine = _lines.Count;
+        var highlightBg = Theme.IsDark ? Theme.Background.Lighten(0.12) : Theme.Background.Darken(0.08);
 
         // Top border:  ───────┬────────────────
         EmitGridBorder(pad, numWidth, frameWidth, '┬', rule);
 
-        // Header:      <lang>  │
-        if (!string.IsNullOrEmpty(language))
+        // Header:      <lang> · title  │
+        var langLabel = language.Split([' ', '\t', '{'], 2)[0].ToLowerInvariant();
+        if (!string.IsNullOrEmpty(langLabel) || options.Title is not null)
         {
             var header = new DisplayLine();
             if (pad.Length > 0) header.Spans.Add(new StyledSpan(pad));
             header.Spans.Add(new StyledSpan(gutter, rule));
             header.Spans.Add(new StyledSpan("│ ", rule));
-            header.Spans.Add(new StyledSpan(language.ToLowerInvariant(), Theme.Heading, CellStyle.Bold));
+            if (!string.IsNullOrEmpty(langLabel))
+                header.Spans.Add(new StyledSpan(langLabel, Theme.Heading, CellStyle.Bold));
+            if (options.Title is { Length: > 0 } title)
+            {
+                if (!string.IsNullOrEmpty(langLabel)) header.Spans.Add(new StyledSpan("  ·  ", Theme.Muted));
+                header.Spans.Add(new StyledSpan(TextWidth.TrimToWidth(title, Math.Max(4, interior - langLabel.Length - 5)), Theme.Text, CellStyle.Italic));
+            }
             _lines.Add(header);
             // Header separator:  ───────┼────────────────
             EmitGridBorder(pad, numWidth, frameWidth, '┼', rule);
@@ -502,6 +582,7 @@ public sealed partial class MarkdownTerminalRenderer
             // right border). The first row shows the line number; continuation rows show a ↳ marker.
             var wrapped = WrapCodeSpans(spans, interior);
             if (wrapped.Count == 0) wrapped.Add([]);
+            bool highlighted = options.HighlightLines is not null && options.HighlightLines.Contains(n);
 
             for (int w = 0; w < wrapped.Count; w++)
             {
@@ -509,12 +590,19 @@ public sealed partial class MarkdownTerminalRenderer
                 if (pad.Length > 0) line.Spans.Add(new StyledSpan(pad));
                 // Line number on the first row, a continuation arrow on wrapped rows. The gutter is
                 // exactly (numWidth + 1) wide so the '│' lines up with the ┬/┼/┴ junctions.
-                string gutterText = w == 0
-                    ? n.ToString().PadLeft(numWidth) + " "
-                    : "↳".PadLeft(numWidth) + " ";
-                line.Spans.Add(new StyledSpan(gutterText, w == 0 ? numColor : rule));
+                string gutterText = numbers
+                    ? (w == 0 ? n.ToString().PadLeft(numWidth) + " " : "↳".PadLeft(numWidth) + " ")
+                    : (w == 0 ? " " : "↳");
+                line.Spans.Add(new StyledSpan(gutterText, w == 0 ? (highlighted ? Theme.Accent : numColor) : rule, highlighted && w == 0 ? CellStyle.Bold : CellStyle.None));
                 line.Spans.Add(new StyledSpan("│ ", rule));
-                line.Spans.AddRange(wrapped[w]);
+                if (highlighted)
+                {
+                    // Emphasized line: tint its content cells (the `{1,3-5}` / hl_lines convention).
+                    foreach (var s in wrapped[w]) line.Spans.Add(s with { Background = highlightBg });
+                    int used = wrapped[w].Sum(s => TextWidth.Of(s.Text));
+                    if (used < interior) line.Spans.Add(new StyledSpan(new string(' ', interior - used), null, CellStyle.None, null, highlightBg));
+                }
+                else line.Spans.AddRange(wrapped[w]);
                 _lines.Add(line);
             }
             n++;
@@ -583,59 +671,34 @@ public sealed partial class MarkdownTerminalRenderer
         AddBlank();
     }
 
-    // ---------------- raw HTML blocks ----------------
-    /// <summary>
-    /// Renders a raw HTML block. We don't render markup, but we must not silently drop the block's
-    /// text content (a common "where did my content go" bug). We strip tags and emit the remaining
-    /// text dimmed; if there's no visible text (e.g. a comment), nothing is shown.
-    /// </summary>
-    private void RenderHtmlBlock(Markdig.Syntax.HtmlBlock html, int indent)
-    {
-        var raw = html.Lines.ToString();
-        // An explicit anchor block (e.g. <a id="ev-05-whoami"></a>) usually has no visible text and
-        // returns below, so register its id first, pointing at the next line to be emitted (typically
-        // the heading it precedes) so "#ev-05-whoami" links can scroll here.
-        foreach (var anchorId in ExtractHtmlAnchorIds(raw))
-            RegisterAnchor(anchorId, _lines.Count);
-        var text = StripHtmlTags(raw);
-        if (string.IsNullOrWhiteSpace(text)) return;
-
-        EnsureBlankBefore();
-        // Collapse internal whitespace runs so block-level layout doesn't leave odd gaps.
-        var collapsed = System.Text.RegularExpressions.Regex.Replace(text, @"[ \t]+", " ").Trim();
-        EmitWrapped([new StyledSpan(collapsed, Theme.Muted, CellStyle.Italic)], indent);
-        AddBlank();
-    }
-
-    /// <summary>Removes HTML tags and decodes common entities, leaving readable text.</summary>
-    private static string StripHtmlTags(string html)
-    {
-        // Drop comments and <script>/<style> bodies entirely.
-        html = System.Text.RegularExpressions.Regex.Replace(html, "<!--.*?-->", " ",
-            System.Text.RegularExpressions.RegexOptions.Singleline);
-        html = System.Text.RegularExpressions.Regex.Replace(html, "<(script|style)[^>]*>.*?</\\1>", " ",
-            System.Text.RegularExpressions.RegexOptions.Singleline | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        // Block-ish tags become line breaks so paragraphs/list items stay separated.
-        html = System.Text.RegularExpressions.Regex.Replace(html, "<(br|/p|/div|/li|/tr|/h[1-6])\\s*/?>", "\n",
-            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        html = System.Text.RegularExpressions.Regex.Replace(html, "<[^>]+>", "");
-        return System.Net.WebUtility.HtmlDecode(html);
-    }
-
     // ---------------- custom containers (:::) & figures ----------------
-    /// <summary>Renders a fenced custom container (<c>::: name</c>) with a colored gutter and the
-    /// container name as a label, similar to alerts.</summary>
+    /// <summary>
+    /// Renders a fenced custom container (<c>::: name</c>) with a colored gutter and the container
+    /// name as a label, similar to alerts. Azure DevOps embeds diagrams as <c>::: mermaid</c> blocks:
+    /// those are turned into diagram anchors, reconstructing the source from the raw document.
+    /// </summary>
     private void RenderCustomContainer(Markdig.Extensions.CustomContainers.CustomContainer container, int indent)
     {
-        EnsureBlankBefore();
         var name = (container.Info ?? "").Trim();
+        var diagramKind = DiagramExtractor.MapKind(name);
+        if (diagramKind is not null && _source is not null)
+        {
+            var source = ContainerBody(container);
+            if (!string.IsNullOrWhiteSpace(source))
+            {
+                EmitDiagramAnchor(DiagramRequest.Create(diagramKind.Value, source), diagramKind.Value, indent);
+                return;
+            }
+        }
+
+        EnsureBlankBefore();
         var color = Theme.Accent;
         if (!string.IsNullOrEmpty(name))
             EmitWrapped([new StyledSpan(TitleCase(name), color, CellStyle.Bold)], indent + 2, gutterColor: color, gutter: "▌ ");
         foreach (var child in container)
         {
             if (child is Markdig.Syntax.LeafBlock leaf && leaf.Inline is not null)
-                EmitWrapped(InlineToSpans(leaf.Inline, Theme.Text), indent + 2, gutterColor: color, gutter: "▌ ");
+                EmitInlineBlock(leaf.Inline, indent + 2, sourceLine: leaf.Line + 1, gutterColor: color, gutter: "▌ ");
             else
                 RenderBlock(child, indent + 2);
         }
@@ -672,13 +735,16 @@ public sealed partial class MarkdownTerminalRenderer
     }
 
     // ---------------- display math ($$...$$) ----------------
-    private void RenderMathBlock(Markdig.Extensions.Mathematics.MathBlock math, int indent)
+    private void RenderMathBlock(Markdig.Extensions.Mathematics.MathBlock math, int indent) =>
+        EmitMathBlock(math.Lines.ToString(), indent);
+
+    /// <summary>Lays out display math (from <c>$$</c> or a <c>```math</c> fence) centred as a block.</summary>
+    private void EmitMathBlock(string latex, int indent)
     {
         EnsureBlankBefore();
-        var latex = math.Lines.ToString();
         var rows = MathRenderer.ToUnicodeBlock(latex);
         // Center the block as a whole on its widest row.
-        int blockWidth = rows.Count == 0 ? 0 : rows.Max(r => r.Length);
+        int blockWidth = rows.Count == 0 ? 0 : rows.Max(TextWidth.Of);
         int blockPad = Math.Max(indent + 2, (_width - blockWidth) / 2);
         foreach (var raw in rows)
         {
@@ -696,21 +762,25 @@ public sealed partial class MarkdownTerminalRenderer
         EnsureBlankBefore();
         // Caption line for the diagram. The rendered image is drawn on the rows below this line;
         // the caption is just a label so it's clear what the image is (and where it begins).
-        var label = kind switch
-        {
-            DiagramKind.Mermaid => "Mermaid",
-            DiagramKind.D2 => "D2",
-            DiagramKind.Graphviz => "Graphviz",
-            DiagramKind.PlantUml => "PlantUML",
-            _ => "Diagram",
-        };
-        var anchor = new DisplayLine { DiagramKey = request.Key };
+        var label = DiagramLabel(kind);
+        var anchor = NewLine(indent, null, 0, null, null);
+        anchor.DiagramKey = request.Key;
+        anchor.DiagramIndent = indent;
         anchor.Spans.Add(new StyledSpan("◆ ", Theme.Accent));
         anchor.Spans.Add(new StyledSpan(label + " diagram", Theme.Muted, CellStyle.Italic));
         _lines.Add(anchor);
         _pendingDiagrams[request.Key] = request;
         AddBlank();
     }
+
+    internal static string DiagramLabel(DiagramKind kind) => kind switch
+    {
+        DiagramKind.Mermaid => "Mermaid",
+        DiagramKind.D2 => "D2",
+        DiagramKind.Graphviz => "Graphviz",
+        DiagramKind.PlantUml => "PlantUML",
+        _ => kind.ToString(),
+    };
 
     private readonly Dictionary<string, DiagramRequest> _pendingDiagrams = [];
     public IReadOnlyDictionary<string, DiagramRequest> PendingDiagrams => _pendingDiagrams;
@@ -722,14 +792,17 @@ public sealed partial class MarkdownTerminalRenderer
     /// <summary>
     /// Emits an anchor line for an image (PNG/SVG/remote). The viewer loads and draws it inline via
     /// Sixel below the caption, the same way diagrams are drawn. If the image is wrapped in a link
-    /// (<c>[![alt](img)](href)</c>), the caption becomes clickable and follows that link.
+    /// (<c>[![alt](img)](href)</c>), the caption becomes clickable and follows that link. The
+    /// optional <paramref name="gutter"/> (list bullet, quote bar) is drawn in the indent area.
     /// </summary>
-    internal void EmitImageAnchor(string url, string altText, string? linkUrl = null)
+    internal void EmitImageAnchor(string url, string altText, string? linkUrl = null, int indent = 0, Rgb? gutterColor = null, string? gutter = null)
     {
         EnsureBlankBefore();
         var key = ImageKey(url);
         var caption = string.IsNullOrWhiteSpace(altText) ? "image" : altText;
-        var anchor = new DisplayLine { DiagramKey = key };
+        var anchor = NewLine(indent, null, 0, gutterColor, gutter);
+        anchor.DiagramKey = key;
+        anchor.DiagramIndent = indent;
 
         if (!string.IsNullOrEmpty(linkUrl))
         {
@@ -761,17 +834,40 @@ public sealed partial class MarkdownTerminalRenderer
     /// Emits a single anchor for several images laid out horizontally (e.g. a row of badges). The
     /// viewer loads each image, composes them side-by-side into one strip, and draws it.
     /// </summary>
-    internal void EmitImageGroupAnchor(IReadOnlyList<(string Url, string Alt, string? LinkUrl)> images)
+    internal void EmitImageGroupAnchor(IReadOnlyList<(string Url, string Alt, string? LinkUrl)> images, int indent = 0, Rgb? gutterColor = null, string? gutter = null)
     {
         EnsureBlankBefore();
         var urls = images.Select(i => i.Url).ToList();
         var groupKey = "imgrp-" + Hashing.Sha256Hex(string.Join("|", urls))[..16];
 
-        var anchor = new DisplayLine { DiagramKey = groupKey };
+        var anchor = NewLine(indent, null, 0, gutterColor, gutter);
+        anchor.DiagramKey = groupKey;
+        anchor.DiagramIndent = indent;
         anchor.Spans.Add(new StyledSpan("▣ ", Theme.Accent));
         anchor.Spans.Add(new StyledSpan($"{images.Count} images", Theme.Muted, CellStyle.Italic));
         _lines.Add(anchor);
         _pendingImageGroups[groupKey] = urls;
         AddBlank();
+    }
+
+    // ---------------- source access (for constructs Markdig doesn't expose verbatim) ----------------
+    private string? _source;
+
+    /// <summary>
+    /// The raw text between a container's opening and closing fence lines (e.g. the body of an
+    /// Azure DevOps <c>::: mermaid</c> block), sliced from the original document.
+    /// </summary>
+    private string ContainerBody(Markdig.Syntax.ContainerBlock container)
+    {
+        if (_source is null) return "";
+        var span = container.Span;
+        if (span.Start < 0 || span.End < span.Start || span.End >= _source.Length + 1) return "";
+        int end = Math.Min(_source.Length, span.End + 1);
+        var text = _source[span.Start..end];
+        var lines = text.Replace("\r\n", "\n").Split('\n').ToList();
+        if (lines.Count > 0 && lines[0].TrimStart().StartsWith(":::")) lines.RemoveAt(0);
+        while (lines.Count > 0 && lines[^1].Trim().Length == 0) lines.RemoveAt(lines.Count - 1);
+        if (lines.Count > 0 && lines[^1].TrimStart().StartsWith(":::")) lines.RemoveAt(lines.Count - 1);
+        return string.Join("\n", lines);
     }
 }

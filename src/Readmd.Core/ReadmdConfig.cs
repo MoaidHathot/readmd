@@ -32,6 +32,18 @@ public sealed class ReadmdConfig
     /// <summary>Inline-graphics mode for the terminal: "sixel", "half-block", "none", or "auto".</summary>
     [JsonPropertyName("graphics")] public string? Graphics { get; set; }
 
+    /// <summary>Maximum reading width in columns for the terminal (0/absent = full width). Narrower content is centred.</summary>
+    [JsonPropertyName("maxWidth")] public int? MaxWidth { get; set; }
+
+    /// <summary>Show line numbers in code blocks (default true).</summary>
+    [JsonPropertyName("lineNumbers")] public bool? LineNumbers { get; set; }
+
+    /// <summary>Tab stop used when expanding tabs inside code blocks (default 4).</summary>
+    [JsonPropertyName("tabSize")] public int? TabSize { get; set; }
+
+    /// <summary>Typographic replacements: smart quotes, dashes and ellipses (default false).</summary>
+    [JsonPropertyName("smartPunctuation")] public bool? SmartPunctuation { get; set; }
+
     /// <summary>Named custom color themes that can be selected via <see cref="Theme"/>.</summary>
     [JsonPropertyName("themes")] public Dictionary<string, ColorTheme>? Themes { get; set; }
 
@@ -66,6 +78,10 @@ public sealed class ReadmdConfig
             GraphvizPath = overrides.GraphvizPath ?? GraphvizPath,
             PlantUmlPath = overrides.PlantUmlPath ?? PlantUmlPath,
             Graphics = overrides.Graphics ?? Graphics,
+            MaxWidth = overrides.MaxWidth ?? MaxWidth,
+            LineNumbers = overrides.LineNumbers ?? LineNumbers,
+            TabSize = overrides.TabSize ?? TabSize,
+            SmartPunctuation = overrides.SmartPunctuation ?? SmartPunctuation,
             Themes = MergeDict(Themes, overrides.Themes),
             Keys = MergeDict(Keys, overrides.Keys),
         };

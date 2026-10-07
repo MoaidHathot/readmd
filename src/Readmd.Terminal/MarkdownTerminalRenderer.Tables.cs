@@ -32,8 +32,19 @@ public sealed partial class MarkdownTerminalRenderer
             headerRows.Add(row.IsHeader);
         }
         if (styleRows.Count == 0) return;
+        EmitTable(styleRows, headerRows, aligns, indent);
+    }
 
+    /// <summary>
+    /// Lays out a table (from Markdown or HTML) as a box-drawn grid: columns shrink (widest first)
+    /// and cells wrap to fit the width. When even the minimum grid cannot fit — many columns on a
+    /// narrow terminal — it falls back to a <em>stacked</em> layout, one "header: value" card per
+    /// row, so nothing is clipped off the right edge.
+    /// </summary>
+    internal void EmitTable(List<List<List<StyledSpan>>> styleRows, List<bool> headerRows, List<TableColumnAlign?> aligns, int indent)
+    {
         int colCount = styleRows.Max(r => r.Count);
+        if (colCount == 0) return;
         var widths = new int[colCount];
         foreach (var r in styleRows)
             for (int c = 0; c < r.Count; c++)
@@ -52,6 +63,13 @@ public sealed partial class MarkdownTerminalRenderer
             widths[widest]--; sum--;
         }
 
+        // Still too wide for the grid (3 cells per column + borders)? Stack instead of clipping.
+        if (sum + colCount * 3 + 1 > _width - indent)
+        {
+            EmitStackedTable(styleRows, headerRows, indent);
+            return;
+        }
+
         string pad = new(' ', indent);
         EmitBorder(pad, widths, '┌', '┬', '┐');
         for (int i = 0; i < styleRows.Count; i++)
@@ -68,6 +86,47 @@ public sealed partial class MarkdownTerminalRenderer
                 EmitBorder(pad, widths, '├', '┼', '┤');
         }
         EmitBorder(pad, widths, '└', '┴', '┘');
+        AddBlank();
+    }
+
+    /// <summary>
+    /// Narrow-terminal table layout: each body row becomes a card whose lines are
+    /// "<c>header:</c> value" (or "<c>#n:</c> value" without headers), separated by a rule.
+    /// </summary>
+    private void EmitStackedTable(List<List<List<StyledSpan>>> styleRows, List<bool> headerRows, int indent)
+    {
+        int colCount = styleRows.Max(r => r.Count);
+        var header = headerRows.Contains(true) ? styleRows[headerRows.IndexOf(true)] : null;
+        var labels = new List<string>();
+        for (int c = 0; c < colCount; c++)
+        {
+            string label = header is not null && c < header.Count ? string.Concat(header[c].Select(s => s.Text)).Replace("\n", " ").Trim() : "";
+            if (label.Length == 0) label = $"#{c + 1}";
+            labels.Add(label);
+        }
+        int labelWidth = Math.Min(Math.Max(4, labels.Max(TextWidth.Of)), Math.Max(8, (_width - indent) / 3));
+
+        string pad = new(' ', indent);
+        var rule = new DisplayLine();
+        rule.Spans.Add(new StyledSpan(pad + new string('─', Math.Max(8, _width - indent - 1)), Theme.Rule));
+        _lines.Add(rule);
+        for (int i = 0; i < styleRows.Count; i++)
+        {
+            if (headerRows[i]) continue;
+            var row = styleRows[i];
+            for (int c = 0; c < colCount; c++)
+            {
+                var cell = c < row.Count ? row[c] : [];
+                if (cell.Count == 0 || cell.All(s => string.IsNullOrWhiteSpace(s.Text))) continue;
+                var label = TextWidth.TrimToWidth(labels[c], labelWidth);
+                // The "label │ " is a hanging gutter: wrapped values align under the first line's value.
+                EmitWrapped(new List<StyledSpan>(cell), indent + labelWidth + 3, gutterColor: Theme.Heading,
+                    gutter: label.PadRight(labelWidth) + " │ ", repeatGutter: false);
+            }
+            var sep = new DisplayLine();
+            sep.Spans.Add(new StyledSpan(pad + new string('─', Math.Max(8, _width - indent - 1)), Theme.Rule));
+            _lines.Add(sep);
+        }
         AddBlank();
     }
 

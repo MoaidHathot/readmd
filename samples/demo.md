@@ -545,6 +545,40 @@ core.parser -> core.diagrams
 
 See the [second page](./page2.md) for multi-file navigation.
 
+## HTML in Markdown
+
+The markup that READMEs rely on is interpreted, not stripped:
+
+<p align="center">
+  <img src="./logo.png" alt="readmd logo" width="96">
+  <br>
+  <b>readmd</b> &mdash; <i>a terminal-first Markdown viewer</i>
+</p>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./logo.png">
+  <source media="(prefers-color-scheme: light)" srcset="./logo.svg">
+  <img alt="Theme-aware logo" src="./logo.svg">
+</picture>
+
+Press <kbd>Ctrl</kbd> + <kbd>C</kbd> to copy. Water is H<sub>2</sub>O, E = mc<sup>2</sup>, <mark>highlighted</mark>, <u>underlined</u>, <s>struck</s>, <span style="color:#e5484d">colored</span>, and <a href="https://github.com/MoaidHathot/readmd">an HTML link</a>.
+
+<details>
+<summary>Click to expand (collapsible section)</summary>
+
+The body of a `<details>` block is regular Markdown — including **formatting** and lists:
+
+- it is indented under its summary
+- so the structure stays visible
+
+</details>
+
+<table>
+  <tr><th>Name</th><th align="right">Size</th></tr>
+  <tr><td>alpha</td><td align="right">10 KB</td></tr>
+  <tr><td>beta <b>(bold)</b></td><td align="right">200 KB</td></tr>
+</table>
+
 ## Glossary (definition list)
 
 Sixel

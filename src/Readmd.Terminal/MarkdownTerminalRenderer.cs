@@ -33,18 +33,21 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
         IReadOnlyList<TerminalLink> Links,
         IReadOnlyDictionary<string, int> Anchors);
 
-    public RenderResult Render(MarkdownObject document, IReadOnlyList<TocEntry>? toc = null, FrontMatter? frontMatter = null)
+    public RenderResult Render(MarkdownObject document, IReadOnlyList<TocEntry>? toc = null, FrontMatter? frontMatter = null, string? source = null)
     {
         _lines.Clear();
         _links.Clear();
         _anchors.Clear();
         _abbreviationsShown.Clear();
+        _source = source;
+        _detailsIndent = 0;
+        _detailsDepth = 0;
         _toc = toc ?? [];
         RenderFrontMatterHeader(frontMatter);
         if (document is ContainerBlock container)
         {
             foreach (var block in container)
-                RenderBlock(block, 0);
+                RenderBlock(block, TopLevelIndent);
         }
         TrimTrailingBlank();
         return new RenderResult(_lines, _links, _anchors);
@@ -153,18 +156,29 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
     // ---------------- headings ----------------
     private void RenderHeading(HeadingBlock heading)
     {
-        EnsureBlankBefore();
         var id = heading.GetAttributes().Id;
         var titleText = TocExtractor.GetPlainText(heading);
+        EmitHeading(heading.Level, (color, style) => InlineToSpans(heading.Inline, color, style), titleText, id, heading.Line + 1);
+    }
+
+    /// <summary>
+    /// Emits a heading of the given level. <paramref name="spansFor"/> produces the inline spans
+    /// given the level's colour and base style (so Markdown and HTML headings share one look):
+    /// H1 is a banner row with an elevated background and a heavy underline, H2 a marker plus a
+    /// full-width rule, H3–H6 a marker with distinct glyphs per level.
+    /// </summary>
+    internal void EmitHeading(int level, Func<Rgb, CellStyle, List<StyledSpan>> spansFor, string titleText, string? id, int sourceLine)
+    {
+        EnsureBlankBefore();
         // The heading line is emitted next (at _lines.Count), for both the H1 and H2+ paths below.
         RegisterAnchor(id, _lines.Count);
 
-        if (heading.Level == 1)
+        if (level <= 1)
         {
             // H1: a bold banner row with a colored background bar. Inline formatting (code, emphasis,
             // links) is preserved and long titles wrap instead of being clipped.
-            var h1 = InlineToSpans(heading.Inline, theme.H1, CellStyle.Bold);
-            EmitWrapped(h1, 2, headingId: id, sourceLine: heading.Line + 1, lineBackground: theme.BackgroundElevated);
+            var h1 = spansFor(theme.H1, CellStyle.Bold);
+            EmitWrapped(h1, 2, headingId: id, sourceLine: sourceLine, lineBackground: theme.BackgroundElevated);
             // underline rule
             var rule = new DisplayLine();
             rule.Spans.Add(new StyledSpan(new string('━', Math.Max(8, Math.Min(_width - 1, TextWidth.Of(titleText) + 4))), theme.H1));
@@ -175,7 +189,7 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
 
         // H2/H3+: a colored marker + bold title; H2 also gets a thin underline. Each level has its
         // own glyph so H4/H5/H6 remain distinguishable.
-        var (marker, color, extraStyle) = heading.Level switch
+        var (marker, color, extraStyle) = level switch
         {
             2 => ("▌ ", theme.H2, CellStyle.None),
             3 => ("● ", theme.H3, CellStyle.None),
@@ -184,9 +198,9 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
             _ => ("· ", theme.Muted, CellStyle.Italic),
         };
         var spans = new List<StyledSpan> { new(marker, color, CellStyle.Bold) };
-        spans.AddRange(InlineToSpans(heading.Inline, color, CellStyle.Bold | extraStyle));
-        EmitWrapped(spans, 0, headingId: id, sourceLine: heading.Line + 1);
-        if (heading.Level == 2)
+        spans.AddRange(spansFor(color, CellStyle.Bold | extraStyle));
+        EmitWrapped(spans, 0, headingId: id, sourceLine: sourceLine);
+        if (level == 2)
         {
             var rule = new DisplayLine();
             rule.Spans.Add(new StyledSpan(new string('─', Math.Max(8, _width - 1)), theme.Rule));
@@ -206,39 +220,63 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
             return;
         }
 
-        // If the paragraph contains image(s), render them inline (Sixel). Multiple images with no
-        // meaningful text (e.g. a row of badges) are laid out SIDE-BY-SIDE in one strip, like a
-        // browser. A single image, or images mixed with text, render one per line.
-        var images = CollectImages(para.Inline);
-        if (images.Count > 0)
+        EmitInlineBlock(para.Inline, indent, sourceLine: para.Line + 1);
+        AddBlank();
+    }
+
+    /// <summary>
+    /// Emits a paragraph-like inline run in any context (top level, list item, quote, alert,
+    /// footnote, definition, container). Images inside it — Markdown <c>![..](..)</c> or HTML
+    /// <c>&lt;img&gt;</c> — are rendered inline as image anchors below the text (several images
+    /// with no text, e.g. a badge row, become one side-by-side strip, like a browser), so images
+    /// show up wherever they appear instead of degrading to a placeholder.
+    /// </summary>
+    private void EmitInlineBlock(ContainerInline inline, int indent, int sourceLine = 0,
+        Rgb? baseColor = null, CellStyle baseStyle = CellStyle.None,
+        Rgb? gutterColor = null, string? gutter = null, bool repeatGutter = true, string? headingId = null)
+    {
+        var color = baseColor ?? theme.Text;
+        var images = CollectImages(inline);
+        if (images.Count == 0)
         {
-            bool hasText = HasNonImageText(para.Inline);
-            if (hasText)
-            {
-                var textSpans = InlineToSpans(para.Inline, theme.Text)
-                    .Where(s => !s.Text.StartsWith("🖼"))
-                    .ToList();
-                if (textSpans.Any(s => !string.IsNullOrWhiteSpace(s.Text)))
-                    EmitWrapped(textSpans, indent, sourceLine: para.Line + 1);
-                foreach (var img in images)
-                    EmitImageAnchor(img.Url, img.Alt, img.LinkUrl);
-            }
-            else if (images.Count == 1)
-            {
-                EmitImageAnchor(images[0].Url, images[0].Alt, images[0].LinkUrl);
-            }
-            else
-            {
-                EmitImageGroupAnchor(images);
-            }
-            AddBlank();
+            EmitWrapped(InlineToSpans(inline, color, baseStyle), indent, headingId: headingId, sourceLine: sourceLine,
+                gutterColor: gutterColor, gutter: gutter, repeatGutter: repeatGutter);
             return;
         }
 
-        var spans = InlineToSpans(para.Inline, theme.Text);
-        EmitWrapped(spans, indent, sourceLine: para.Line + 1);
-        AddBlank();
+        bool hasText = HasNonImageText(inline);
+        // The gutter (bullet, quote bar) goes on whichever line comes first: the text, or the image.
+        string? imageGutter = gutter;
+        if (hasText)
+        {
+            _suppressImagePlaceholders++;
+            var textSpans = InlineToSpans(inline, color, baseStyle);
+            _suppressImagePlaceholders--;
+            if (textSpans.Any(s => !string.IsNullOrWhiteSpace(s.Text) && s.Text != "\n"))
+            {
+                EmitWrapped(textSpans, indent, headingId: headingId, sourceLine: sourceLine,
+                    gutterColor: gutterColor, gutter: gutter, repeatGutter: repeatGutter);
+                imageGutter = repeatGutter ? gutter : null;
+            }
+            foreach (var img in images)
+            {
+                EmitImageAnchor(img.Url, img.Alt, img.LinkUrl, indent, gutterColor, imageGutter);
+                if (!repeatGutter) imageGutter = null;
+            }
+        }
+        else if (images.Count == 1)
+        {
+            EmitImageAnchor(images[0].Url, images[0].Alt, images[0].LinkUrl, indent, gutterColor, imageGutter);
+        }
+        else
+        {
+            EmitImageGroupAnchor(images, indent, gutterColor, imageGutter);
+        }
     }
+
+    // >0 while a block-level emitter is collecting a paragraph's images itself, so inline image
+    // placeholders ("🖼 alt") are not also written into the text.
+    private int _suppressImagePlaceholders;
 
     /// <summary>True if the inline tree has any literal/code text that is NOT inside an image.</summary>
     private static bool HasNonImageText(Markdig.Syntax.Inlines.ContainerInline container)
@@ -274,7 +312,8 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
     {
         var result = new List<(string, string, string?)>();
         // Track the nearest enclosing (non-image) link so an image wrapped in a link becomes
-        // clickable: [![alt](img)](href).
+        // clickable: [![alt](img)](href). Raw HTML <a href> … <img> … </a> is tracked the same way.
+        string? htmlLink = null;
         void Walk(Markdig.Syntax.Inlines.Inline inline, string? enclosingLink)
         {
             if (inline is Markdig.Syntax.Inlines.LinkInline link)
@@ -283,11 +322,24 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
                 {
                     if (IsMediaUrl(link.Url)) return;   // audio/video: rendered as a text link instead
                     var alt = GetInlineText(link);
-                    result.Add((link.Url ?? "", alt, enclosingLink));
+                    result.Add((link.Url ?? "", alt, enclosingLink ?? htmlLink));
                     return;
                 }
                 // A normal link: its children (which may include an image) get this as the target.
                 foreach (var child in link) Walk(child, link.Url ?? enclosingLink);
+                return;
+            }
+            if (inline is Markdig.Syntax.Inlines.HtmlInline html)
+            {
+                foreach (var tok in HtmlFragments.Tokenize(html.Tag))
+                {
+                    if (tok.Kind == HtmlFragments.TokenKind.Open && tok.Name == "a" && tok.Attr("href") is { Length: > 0 } href)
+                        htmlLink = href;
+                    else if (tok.Kind == HtmlFragments.TokenKind.Close && tok.Name == "a")
+                        htmlLink = null;
+                    else if (tok.Kind == HtmlFragments.TokenKind.Open && tok.Name == "img" && tok.Attr("src") is { Length: > 0 } src)
+                        result.Add((src, tok.Attr("alt") ?? "", enclosingLink ?? htmlLink));
+                }
                 return;
             }
             if (inline is Markdig.Syntax.Inlines.ContainerInline c)
@@ -328,9 +380,31 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
     {
         var spans = new List<StyledSpan>();
         if (container is null) return spans;
+        // Inline HTML styling (<b>, <kbd>, <a href>, …) is scoped to one inline run: an unclosed
+        // tag never leaks into the next block.
+        _html.ResetInline();
         foreach (var inline in container)
             AppendInline(inline, spans, baseColor, baseStyle, null);
+        _html.ResetInline();
         return spans;
+    }
+
+    /// <summary>
+    /// Adds a text leaf, applying any active inline-HTML overlay (style flags, colour, link, sub/
+    /// superscript transform, keycap chrome) on top of the Markdown-derived style.
+    /// </summary>
+    private void Leaf(List<StyledSpan> spans, string text, Rgb? color, CellStyle style, int? linkId, Rgb? background = null)
+    {
+        if (text.Length == 0) return;
+        var o = _html.Overlay;
+        if (o.IsEmpty)
+        {
+            spans.Add(new StyledSpan(text, color, style, linkId, background));
+            return;
+        }
+        if (o.Superscript) text = MathRenderer.ToScript(text, superscript: true);
+        else if (o.Subscript) text = MathRenderer.ToScript(text, superscript: false);
+        spans.Add(new StyledSpan(text, o.Color ?? (o.LinkId is not null ? theme.Link : color), style | o.Style, o.LinkId ?? linkId, o.Background ?? background));
     }
 
     private void AppendInline(Inline inline, List<StyledSpan> spans, Rgb color, CellStyle style, int? linkId)
@@ -338,7 +412,7 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
         switch (inline)
         {
             case LiteralInline literal:
-                spans.Add(new StyledSpan(literal.Content.ToString(), color, style, linkId));
+                Leaf(spans, literal.Content.ToString(), color, style, linkId);
                 break;
             case EmphasisInline emphasis:
             {
@@ -375,9 +449,9 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
                     }
                     case ('"', _): // ""citation"" → a cited reference, shown italic in muted color
                     {
-                        spans.Add(new StyledSpan("“", theme.Muted, style, linkId));
+                        Leaf(spans, "“", theme.Muted, style, linkId);
                         foreach (var child in emphasis) AppendInline(child, spans, theme.Muted, style | CellStyle.Italic, linkId);
-                        spans.Add(new StyledSpan("”", theme.Muted, style, linkId));
+                        Leaf(spans, "”", theme.Muted, style, linkId);
                         break;
                     }
                     default:
@@ -390,10 +464,17 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
                 break;
             }
             case CodeInline code:
-                spans.Add(new StyledSpan(code.Content, theme.Code, style, linkId));
+                if (TryColorChip(code.Content, out var chip))
+                {
+                    // GitHub shows a colour swatch after `#rrggbb` / rgb() / hsl() inline code.
+                    Leaf(spans, code.Content, theme.Code, style, linkId);
+                    spans.Add(new StyledSpan(" ■", chip, style, linkId));
+                    break;
+                }
+                Leaf(spans, code.Content, theme.Code, style, linkId);
                 break;
             case MathInline math:
-                spans.Add(new StyledSpan(MathRenderer.ToUnicode(math.Content.ToString()), theme.Code, style, linkId));
+                Leaf(spans, MathRenderer.ToUnicode(math.Content.ToString()), theme.Code, style, linkId);
                 break;
             case LinkInline link:
             {
@@ -411,7 +492,8 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
                         AppendLinkMarker(spans, mediaId);
                         break;
                     }
-                    spans.Add(new StyledSpan($"🖼 {alt} ({link.Url})", theme.Muted, style | CellStyle.Italic, linkId));
+                    if (_suppressImagePlaceholders == 0)
+                        spans.Add(new StyledSpan($"🖼 {alt} ({link.Url})", theme.Muted, style | CellStyle.Italic, linkId));
                     break;
                 }
                 var id = RegisterLink(link.Url ?? "");
@@ -424,7 +506,7 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
             case AutolinkInline auto:
             {
                 var id = RegisterLink(auto.Url);
-                spans.Add(new StyledSpan(auto.Url, theme.Link, style | CellStyle.Underline, id));
+                Leaf(spans, auto.Url, theme.Link, style | CellStyle.Underline, id);
                 AppendLinkMarker(spans, id);
                 break;
             }
@@ -433,7 +515,10 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
                 break;
             case HtmlEntityInline entity:
                 // &amp; &copy; &#169; &nbsp; … — emit the decoded character(s), never drop them.
-                spans.Add(new StyledSpan(entity.Transcoded.ToString(), color, style, linkId));
+                Leaf(spans, entity.Transcoded.ToString(), color, style, linkId);
+                break;
+            case Markdig.Extensions.SmartyPants.SmartyPant pant:
+                Leaf(spans, TocExtractor.SmartyPantText(pant), color, style, linkId);
                 break;
             case Markdig.Extensions.TaskLists.TaskList task:
                 // GitHub task list checkbox. ☑ when checked, ☐ when unchecked.
@@ -450,7 +535,7 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
                 // each abbreviation appears, its definition follows once, dimmed in parentheses, so
                 // the expansion is visible in a terminal (there's no hover tooltip).
                 var label = abbr.Abbreviation.Label ?? "";
-                spans.Add(new StyledSpan(label, color, style | CellStyle.Underline, linkId));
+                Leaf(spans, label, color, style | CellStyle.Underline, linkId);
                 var expansion = abbr.Abbreviation.Text.ToString().Trim();
                 if (expansion.Length > 0 && _abbreviationsShown.Add(label))
                     spans.Add(new StyledSpan($" ({expansion})", theme.Muted, style | CellStyle.Dim, linkId));
@@ -471,24 +556,82 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
     private readonly HashSet<string> _abbreviationsShown = new(StringComparer.Ordinal);
 
     /// <summary>
-    /// Handles a raw inline HTML tag. Line-break tags become hard breaks; an inline
-    /// <c>&lt;a id="…"&gt;</c>/<c>&lt;a name="…"&gt;</c> is a navigation target (registered so
-    /// <c>#id</c> links resolve); every other tag is dropped — the text between tags is a separate
-    /// <see cref="LiteralInline"/> and still shows.
+    /// Handles a raw inline HTML tag inside a Markdown paragraph: line breaks, anchors, images
+    /// (collected by the enclosing block), and the inline formatting subset (<c>&lt;b&gt;</c>,
+    /// <c>&lt;kbd&gt;</c>, <c>&lt;sup&gt;</c>, <c>&lt;a href&gt;</c>, <c>&lt;span style=color&gt;</c>, …)
+    /// which is applied as an overlay to the following text until the matching close tag.
     /// </summary>
     private void AppendInlineHtml(string tag, List<StyledSpan> spans, Rgb color, CellStyle style, int? linkId)
     {
         foreach (var anchorId in ExtractHtmlAnchorIds(tag))
             RegisterAnchor(anchorId, _lines.Count);
-        if (IsLineBreakTag(tag))
-            spans.Add(new StyledSpan("\n", color, style, linkId));
+        foreach (var tok in HtmlFragments.Tokenize(tag))
+        {
+            switch (tok.Kind)
+            {
+                case HtmlFragments.TokenKind.Open when tok.Name == "br":
+                    spans.Add(new StyledSpan("\n", color, style, linkId));
+                    break;
+                case HtmlFragments.TokenKind.Open when tok.Name == "img":
+                    if (_suppressImagePlaceholders == 0 && tok.Attr("src") is { Length: > 0 } src)
+                        spans.Add(new StyledSpan($"🖼 {tok.Attr("alt") ?? ""} ({src})".Replace("  ", " "), theme.Muted, style | CellStyle.Italic, linkId));
+                    break;
+                case HtmlFragments.TokenKind.Open when tok.Name == "abbr":
+                    _html.Push(tok, this);
+                    break;
+                case HtmlFragments.TokenKind.Open:
+                    _html.Push(tok, this);
+                    break;
+                case HtmlFragments.TokenKind.Close:
+                    _html.Pop(tok.Name);
+                    break;
+                case HtmlFragments.TokenKind.Text:
+                    // A stray text fragment inside what Markdig classed as a tag — keep it visible.
+                    Leaf(spans, tok.Text, color, style, linkId);
+                    break;
+            }
+        }
     }
 
-    private static readonly System.Text.RegularExpressions.Regex LineBreakTagRegex = new(
-        @"^<br\s*/?\s*>$", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+    /// <summary>GitHub-style colour chips: inline code that is exactly a CSS colour literal.</summary>
+    private static bool TryColorChip(string code, out Rgb color)
+    {
+        color = default;
+        var s = code.Trim();
+        if (s.Length is 4 or 7 && s[0] == '#' && s.Skip(1).All(Uri.IsHexDigit))
+        {
+            try { color = Rgb.FromHex(s); return true; } catch { return false; }
+        }
+        var m = System.Text.RegularExpressions.Regex.Match(s, @"^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (m.Success)
+        {
+            color = new Rgb((byte)Math.Min(255, int.Parse(m.Groups[1].Value)), (byte)Math.Min(255, int.Parse(m.Groups[2].Value)), (byte)Math.Min(255, int.Parse(m.Groups[3].Value)));
+            return true;
+        }
+        m = System.Text.RegularExpressions.Regex.Match(s, @"^hsl\(\s*(\d{1,3})\s*,\s*(\d{1,3})%\s*,\s*(\d{1,3})%\s*\)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (m.Success)
+        {
+            color = HslToRgb(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value) / 100.0, int.Parse(m.Groups[3].Value) / 100.0);
+            return true;
+        }
+        return false;
+    }
 
-    /// <summary>True for <c>&lt;br&gt;</c>, <c>&lt;br/&gt;</c>, <c>&lt;br /&gt;</c> (any case).</summary>
-    internal static bool IsLineBreakTag(string tag) => LineBreakTagRegex.IsMatch(tag.Trim());
+    private static Rgb HslToRgb(double h, double s, double l)
+    {
+        h = ((h % 360) + 360) % 360 / 360.0;
+        double q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+        double p = 2 * l - q;
+        double Channel(double t)
+        {
+            if (t < 0) t += 1; if (t > 1) t -= 1;
+            if (t < 1.0 / 6) return p + (q - p) * 6 * t;
+            if (t < 0.5) return q;
+            if (t < 2.0 / 3) return p + (q - p) * (2.0 / 3 - t) * 6;
+            return p;
+        }
+        return new Rgb((byte)Math.Round(Channel(h + 1.0 / 3) * 255), (byte)Math.Round(Channel(h) * 255), (byte)Math.Round(Channel(h - 1.0 / 3) * 255));
+    }
 
     private static readonly string[] MediaExtensions = [".mp4", ".webm", ".ogv", ".mov", ".mp3", ".ogg", ".wav", ".m4a", ".flac"];
 
@@ -519,6 +662,7 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
         {
             if (inline is LiteralInline lit) sb.Append(lit.Content.AsSpan());
             else if (inline is HtmlEntityInline entity) sb.Append(entity.Transcoded.AsSpan());
+            else if (inline is Markdig.Extensions.SmartyPants.SmartyPant pant) sb.Append(TocExtractor.SmartyPantText(pant));
             else if (inline is CodeInline code) sb.Append(code.Content);
             else if (inline is ContainerInline c) sb.Append(GetInlineText(c));
         }

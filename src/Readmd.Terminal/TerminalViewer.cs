@@ -27,6 +27,18 @@ public sealed class TerminalViewerOptions
 
     /// <summary>Invoked when the user presses 'o' to open the current file in the browser.</summary>
     public Func<string, Task>? OpenInBrowser { get; init; }
+
+    /// <summary>Maximum reading width in columns (0 = use the full terminal width). Narrower content is centred.</summary>
+    public int MaxWidth { get; init; }
+
+    /// <summary>Show line numbers in code blocks (a fence's own nonums/showLineNumbers overrides).</summary>
+    public bool LineNumbers { get; init; } = true;
+
+    /// <summary>Tab stop used when expanding tabs in code blocks.</summary>
+    public int TabSize { get; init; } = 4;
+
+    /// <summary>Apply typographic replacements (smart quotes, dashes, ellipses).</summary>
+    public bool SmartPunctuation { get; init; }
 }
 
 /// <summary>
@@ -344,13 +356,39 @@ public sealed partial class TerminalViewer : IAsyncDisposable
     {
         // Parse once with the shared terminal pipeline and derive TOC/title/front-matter from that
         // same AST — no second parse, and no HTML render that the terminal never displays.
-        var ast = Timing.Measure("parse", () => Markdig.Markdown.Parse(markdown, TerminalPipeline.Instance));
-        var meta = MarkdownRenderer.ExtractMetadata(ast, path);
+        var (body, toml) = FrontMatter.StripToml(markdown);
+        var ast = Timing.Measure("parse", () => Markdig.Markdown.Parse(body, TerminalPipeline.For(_options.SmartPunctuation)));
+        var meta = MarkdownRenderer.ExtractMetadata(ast, path, toml);
         // Code is highlighted in the background (see KickoffHighlights) so the first paint is fast.
-        var renderer = new MarkdownTerminalRenderer(_theme, _screen.Width - 1) { DeferHighlighting = true };
-        var result = Timing.Measure("layout", () => renderer.Render(ast, meta.Toc, meta.FrontMatter));
+        var renderer = new MarkdownTerminalRenderer(_theme, ContentWidth) { DeferHighlighting = true, LineNumbers = _options.LineNumbers, TabSize = _options.TabSize };
+        var result = Timing.Measure("layout", () => renderer.Render(ast, meta.Toc, meta.FrontMatter, body));
         return new ParsedDoc(result.Lines, result.Links, result.Anchors, meta.Toc, meta.Title, renderer.PendingDiagrams,
             renderer.PendingImages, renderer.PendingImageGroups, renderer.PendingHighlights);
+    }
+
+    /// <summary>
+    /// The width content is laid out to: the terminal width (minus one column) capped by the
+    /// configured reading width, if any. Content narrower than the terminal is centred.
+    /// </summary>
+    private int ContentWidth
+    {
+        get
+        {
+            int full = _screen.Width - 1;
+            int max = _options.MaxWidth;
+            return max > 0 ? Math.Min(full, max) : full;
+        }
+    }
+
+    /// <summary>Left margin (columns) that centres a width-capped document in the terminal.</summary>
+    private int ContentOffset
+    {
+        get
+        {
+            int full = _screen.Width - 1;
+            int content = ContentWidth;
+            return content < full ? (full - content) / 2 : 0;
+        }
     }
 
     public async ValueTask DisposeAsync()

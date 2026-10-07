@@ -12,17 +12,30 @@ namespace Readmd.Terminal;
 /// </summary>
 public static class DocumentTextRenderer
 {
-    public static string Render(string markdown, bool dark, int width, bool color)
+    /// <summary>Layout options for printed output.</summary>
+    public sealed record Options(bool LineNumbers = true, int TabSize = 4, bool SmartPunctuation = false)
     {
+        public static readonly Options Default = new();
+    }
+
+    public static string Render(string markdown, bool dark, int width, bool color, Options? options = null)
+    {
+        options ??= Options.Default;
         var theme = TerminalTheme.For(dark);
         // Parse once with the terminal pipeline, then derive TOC/front-matter from that same AST -
         // no second parse and no HTML render (which the text output never displays).
-        var ast = Timing.Measure("parse", () => Markdown.Parse(markdown, TerminalPipeline.Instance));
-        var meta = Timing.Measure("metadata", () => MarkdownRenderer.ExtractMetadata(ast, "stdin.md"));
+        var (body, toml) = FrontMatter.StripToml(markdown);
+        var ast = Timing.Measure("parse", () => Markdown.Parse(body, TerminalPipeline.For(options.SmartPunctuation)));
+        var meta = Timing.Measure("metadata", () => MarkdownRenderer.ExtractMetadata(ast, "stdin.md", toml));
         // Plain output carries no colour, so syntax highlighting (the slowest part of layout) would be
         // pure waste: defer it and simply never run the deferred work.
-        var renderer = new MarkdownTerminalRenderer(theme, Math.Max(20, width) - 1) { DeferHighlighting = !color };
-        var result = Timing.Measure("layout", () => renderer.Render(ast, meta.Toc, meta.FrontMatter));
+        var renderer = new MarkdownTerminalRenderer(theme, Math.Max(20, width) - 1)
+        {
+            DeferHighlighting = !color,
+            LineNumbers = options.LineNumbers,
+            TabSize = options.TabSize,
+        };
+        var result = Timing.Measure("layout", () => renderer.Render(ast, meta.Toc, meta.FrontMatter, body));
 
         var sb = new StringBuilder();
         foreach (var line in result.Lines)
@@ -43,6 +56,7 @@ public static class DocumentTextRenderer
             if (string.IsNullOrEmpty(span.Text)) continue;
             var open = new StringBuilder();
             if (span.Color is { } c) open.Append("\e[38;2;").Append(c.R).Append(';').Append(c.G).Append(';').Append(c.B).Append('m');
+            if (span.Background is { } b) open.Append("\e[48;2;").Append(b.R).Append(';').Append(b.G).Append(';').Append(b.B).Append('m');
             if (span.Style.HasFlag(CellStyle.Bold)) open.Append("\e[1m");
             if (span.Style.HasFlag(CellStyle.Italic)) open.Append("\e[3m");
             if (span.Style.HasFlag(CellStyle.Underline)) open.Append("\e[4m");

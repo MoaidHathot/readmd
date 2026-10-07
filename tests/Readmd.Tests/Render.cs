@@ -24,8 +24,17 @@ internal static class Render
     {
         var doc = Markdown.Parse(markdown, Pipeline);
         var renderer = new MarkdownTerminalRenderer(TerminalTheme.For(dark), width);
-        var result = renderer.Render(doc, null);
+        var result = renderer.Render(doc, null, null, markdown);
         return result.Lines.Select(l => l.PlainText).ToList();
+    }
+
+    /// <summary>Renders markdown and returns the display lines themselves (spans, anchors, keys).</summary>
+    public static (IReadOnlyList<DisplayLine> Lines, IReadOnlyList<TerminalLink> Links, MarkdownTerminalRenderer Renderer) Full(string markdown, int width = 100, bool dark = true)
+    {
+        var doc = Markdown.Parse(markdown, Pipeline);
+        var renderer = new MarkdownTerminalRenderer(TerminalTheme.For(dark), width);
+        var result = renderer.Render(doc, null, null, markdown);
+        return (result.Lines, result.Links, renderer);
     }
 
     /// <summary>Renders markdown and returns the anchor map (id -> display line index) used for
@@ -34,7 +43,7 @@ internal static class Render
     {
         var doc = Markdown.Parse(markdown, Pipeline);
         var renderer = new MarkdownTerminalRenderer(TerminalTheme.For(dark), width);
-        return renderer.Render(doc, null).Anchors;
+        return renderer.Render(doc, null, null, markdown).Anchors;
     }
 
     /// <summary>Renders markdown and returns the whole document as a single newline-joined string.</summary>

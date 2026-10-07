@@ -269,14 +269,16 @@ public sealed partial class TerminalViewer
 
     private void DrawLine(DisplayLine line, int lineIndex, int row, int width)
     {
+        int offset = ContentOffset;
         // If the line wants a full-width background (e.g. code blocks), paint it first.
         if (line.LineBackground is { } lineBg)
         {
-            _screen.MoveTo(row, 0).SetBackground(lineBg).ClearLineToEnd();
+            _screen.MoveTo(row, offset).SetBackground(lineBg).ClearLineToEnd();
         }
 
-        _screen.MoveTo(row, 0);
+        _screen.MoveTo(row, offset);
         int col = 0;
+        width = Math.Max(1, width - offset);
         bool lineSelected = _selAnchor is not null && LineInSelection(lineIndex);
         foreach (var span in line.Spans)
         {
@@ -385,13 +387,14 @@ public sealed partial class TerminalViewer
 
     private SKBitmap GetScaledDiagram(string key, DiagramResult result)
     {
-        var cacheKey = $"{key}-{(_theme.IsDark ? "d" : "l")}-{_screen.Width}-{_cellHeightPx}-{_diagramZoom}";
+        int indent = IndentFor(key);
+        var cacheKey = $"{key}-{(_theme.IsDark ? "d" : "l")}-{_screen.Width}-{_cellHeightPx}-{_diagramZoom}-{indent}";
         if (_scaledDiagramCache.TryGetValue(cacheKey, out var cached) && !cached.IsNull) return cached;
 
         // Size from the source pixel dimensions (same aspect as the SVG, when present).
         int srcW = result.PixelWidth > 0 ? result.PixelWidth : 1;
         int srcH = result.PixelHeight > 0 ? result.PixelHeight : 1;
-        var (w, h) = ScaledSize(srcW, srcH, MaxDiagramRows);
+        var (w, h) = ScaledSize(srcW, srcH, MaxDiagramRows, indent);
         // Snap height UP to a whole number of cell rows so every scroll crop aligns exactly to a
         // row boundary — otherwise the partial last row makes the image jitter while scrolling.
         int rows = Math.Max(1, (int)Math.Ceiling(h / (double)_cellHeightPx));
@@ -401,6 +404,14 @@ public sealed partial class TerminalViewer
         var scaled = ComposeScaledBitmap(key, result, w, h, snappedH, isImage);
         _scaledDiagramCache[cacheKey] = scaled;
         return scaled;
+    }
+
+    /// <summary>The column an image/diagram is drawn at: its first anchor's block indentation.</summary>
+    private int IndentFor(string key)
+    {
+        foreach (var line in _lines)
+            if (line.DiagramKey == key) return Math.Max(0, Math.Min(line.DiagramIndent, _screen.Width / 2));
+        return 0;
     }
 
     /// <summary>
@@ -509,6 +520,7 @@ public sealed partial class TerminalViewer
 
             var scaled = GetScaledDiagram(key, result);
             int imgRows = (int)Math.Ceiling(scaled.Height / (double)_cellHeightPx);
+            int drawCol = 1 + IndentFor(key) + ContentOffset;
 
             // The same image/diagram can appear multiple times in a document (e.g. the same logo.png
             // used both standalone and inside a link). Draw at EVERY anchor with this key, not just
@@ -531,7 +543,7 @@ public sealed partial class TerminalViewer
 
                 if (_graphicsMode == GraphicsMode.HalfBlock)
                 {
-                    DrawHalfBlockSlice(key, scaled, srcY, srcH, drawRow, topCropRows);
+                    DrawHalfBlockSlice(key, scaled, srcY, srcH, drawRow, topCropRows, drawCol);
                     continue;
                 }
 
@@ -542,7 +554,7 @@ public sealed partial class TerminalViewer
                     _sixelCache[cacheKey] = sixel;
                 }
 
-                _screen.MoveTo(drawRow, 1);
+                _screen.MoveTo(drawRow, drawCol);
                 _screen.WriteEscape(sixel);
             }
         }
@@ -553,7 +565,7 @@ public sealed partial class TerminalViewer
     /// cell height of pixels; the slice is rendered to two-pixels-per-row half-block lines and the
     /// visible rows are placed starting at <paramref name="drawRow"/>.
     /// </summary>
-    private void DrawHalfBlockSlice(string key, SKBitmap scaled, int srcY, int srcH, int drawRow, int topCropRows)
+    private void DrawHalfBlockSlice(string key, SKBitmap scaled, int srcY, int srcH, int drawRow, int topCropRows, int drawCol = 1)
     {
         var cacheKey = $"{key}-{(_theme.IsDark ? "d" : "l")}-{_screen.Width}-{_cellHeightPx}-{_diagramZoom}-hb";
         if (!_halfBlockCache.TryGetValue(cacheKey, out var rowLines))
@@ -567,7 +579,7 @@ public sealed partial class TerminalViewer
         {
             int rowIndex = topCropRows + r;
             if (rowIndex < 0 || rowIndex >= rowLines.Count) continue;
-            _screen.MoveTo(drawRow + r, 1);
+            _screen.MoveTo(drawRow + r, drawCol);
             _screen.WriteEscape(rowLines[rowIndex]);
         }
     }
@@ -591,10 +603,10 @@ public sealed partial class TerminalViewer
     /// Computes the scaled pixel size of a diagram so it fits the available width and a given number
     /// of terminal rows of height.
     /// </summary>
-    private (int Width, int Height) ScaledSize(int pxWidth, int pxHeight, int maxRows)
+    private (int Width, int Height) ScaledSize(int pxWidth, int pxHeight, int maxRows, int indent = 0)
     {
         double zoom = Math.Pow(1.25, _diagramZoom);   // Ctrl+wheel zoom steps
-        int maxWidthPx = Math.Max(_cellWidthPx, (_screen.Width - 2) * _cellWidthPx);
+        int maxWidthPx = Math.Max(_cellWidthPx, (ContentWidth - 1 - indent) * _cellWidthPx);
         int maxHeightPx = Math.Max(_cellHeightPx, maxRows * _cellHeightPx);
         // Base fit scale (never upscales past the source at zoom 0), then apply the zoom factor.
         double fit = Math.Min(maxWidthPx / (double)pxWidth, maxHeightPx / (double)pxHeight);
@@ -624,7 +636,7 @@ public sealed partial class TerminalViewer
     private int DiagramRows(DiagramResult result)
     {
         if (result.Png is null || result.PixelWidth <= 0 || result.PixelHeight <= 0) return 1;
-        var (_, h) = ScaledSize(result.PixelWidth, result.PixelHeight, MaxDiagramRows);
+        var (_, h) = ScaledSize(result.PixelWidth, result.PixelHeight, MaxDiagramRows, IndentFor(result.Key));
         return Math.Max(1, (int)Math.Ceiling(h / (double)_cellHeightPx));
     }
 

@@ -54,6 +54,56 @@ public sealed class FrontMatter
         return Parse(sb.ToString());
     }
 
+    /// <summary>
+    /// Detects and strips a TOML front-matter block (<c>+++ … +++</c>, as used by Hugo/Zola) from
+    /// the start of a document, since Markdig only understands the YAML form. Returns the document
+    /// without the block and the parsed metadata; when there is no TOML block the input is returned
+    /// unchanged with <c>null</c>.
+    /// </summary>
+    public static (string Markdown, FrontMatter? FrontMatter) StripToml(string markdown)
+    {
+        if (string.IsNullOrEmpty(markdown)) return (markdown, null);
+        int start = markdown[0] == '\uFEFF' ? 1 : 0;
+        if (string.CompareOrdinal(markdown, start, "+++", 0, 3) != 0) return (markdown, null);
+        int firstNl = markdown.IndexOf('\n', start);
+        if (firstNl < 0 || markdown[start..firstNl].TrimEnd('\r').Trim() != "+++") return (markdown, null);
+        // Closing fence on its own line.
+        var m = System.Text.RegularExpressions.Regex.Match(markdown[(firstNl + 1)..], @"^\+\+\+[ \t]*\r?$", System.Text.RegularExpressions.RegexOptions.Multiline);
+        if (!m.Success) return (markdown, null);
+        var body = markdown.Substring(firstNl + 1, m.Index);
+        int after = firstNl + 1 + m.Index + m.Length;
+        if (after < markdown.Length && markdown[after] == '\n') after++;
+        return (markdown[after..], ParseToml(body));
+    }
+
+    /// <summary>Parses the common subset of TOML used in front matter: <c>key = "value"</c>, numbers,
+    /// booleans, dates and inline arrays of strings. Tables (<c>[section]</c>) are flattened as <c>section.key</c>.</summary>
+    public static FrontMatter ParseToml(string toml)
+    {
+        var scalars = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var lists = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+        string prefix = "";
+        foreach (var raw in toml.Replace("\r\n", "\n").Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0 || line.StartsWith('#')) continue;
+            if (line.StartsWith('[') && line.EndsWith(']')) { prefix = line.Trim('[', ']').Trim() + "."; continue; }
+            int eq = line.IndexOf('=');
+            if (eq <= 0) continue;
+            var key = prefix + line[..eq].Trim().Trim('"');
+            var value = line[(eq + 1)..].Trim();
+            int hash = value.IndexOf(" #", StringComparison.Ordinal);
+            if (hash >= 0 && !value.StartsWith('"') && !value.StartsWith('\'')) value = value[..hash].Trim();
+            if (value.StartsWith('[') && value.EndsWith(']'))
+            {
+                lists[key] = value[1..^1].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(Unquote).ToList();
+            }
+            else scalars[key] = Unquote(value);
+        }
+        return new FrontMatter(scalars, lists);
+    }
+
     /// <summary>Parses raw front-matter text (without the surrounding <c>---</c> fences).</summary>
     public static FrontMatter Parse(string yaml)
     {

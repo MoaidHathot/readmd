@@ -13,16 +13,19 @@ dnx readmd report.md --browser       # view in the browser (full fidelity)
 
 - **Runs in the terminal** as a full TUI (alternate screen, scrolling, overlays).
 - **One-shot launch** via `dnx readmd <file>` (or `npx`-style global install).
-- **GitHub-Flavored Markdown**: headings, **bold/italic/strikethrough**, inline code, links, tables, lists, blockquotes, hard breaks, emoji shortcodes.
+- **GitHub-Flavored Markdown**: headings, **bold/italic/strikethrough**, inline code, links, tables, lists, blockquotes, hard breaks, emoji shortcodes, HTML entities, color chips after `#rrggbb` inline code.
+- **HTML subset**, interpreted rather than stripped — the markup READMEs actually use: `<p align="center">` headers with `<img>`/`<br>`, `<picture>` (the source matching the current theme is chosen), `<details>`/`<summary>`, `<table>`, `<kbd>`, `<sup>`/`<sub>`, `<mark>`, `<a href>`, `<span style="color:…">`, `<ul>`/`<ol>`, `<blockquote>`, `<pre><code>`, `<h1>`–`<h6>`, `<hr>`. Comments and scripts are invisible; unknown tags fall back to their text.
 - **GitHub alerts** (`[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`) with colored icons and titles.
-- **Task lists** (`- [x]` / `- [ ]`) rendered as ☑ / ☐, **footnotes** with linked markers, and **definition lists**.
-- **Tables** honor column alignment (left/center/right) and **wrap** wide cells instead of truncating; long URLs wrap rather than clipping.
-- **YAML front matter** is recognized and used for document metadata: the `title` sets the document/window title, and `title`/`author`/`date`/`tags` render as a compact header (the raw block never leaks into the body).
+- **Task lists** (`- [x]` / `- [ ]`) rendered as ☑ / ☐, **footnotes** with linked markers, **definition lists**, abbreviations (expansion shown once), alpha/roman list numbering.
+- **Tables** honor column alignment (left/center/right) and **wrap** wide cells instead of truncating; grid-table cells keep lists/code; tables too wide for the terminal are **stacked** into per-row cards rather than clipped. Long URLs wrap rather than clipping.
+- **Code blocks** with a `bat`-style frame: syntax highlighting (TextMate), line numbers (`nonums`/`showLineNumbers` per fence, `lineNumbers` in config), a `title="file.cs"` header, highlighted line ranges (`{1,3-5}` / `hl_lines`), and tab expansion.
+- **Images render wherever they appear** — top level, list items, quotes, alerts, footnotes, HTML — inline via Sixel/half-block; badge rows become one side-by-side strip. Audio/video "images" (YouTube, `.mp4`, …) become playable links.
+- **YAML or TOML front matter** is recognized and used for document metadata: the `title` sets the document/window title, and `title`/`author`/`date`/`tags` render as a compact header (the raw block never leaks into the body).
 - **Live reload** on file change. The browser preserves scroll position (DOM-morphing instead of full reload); the terminal repaints in place and caches diagrams so they don't flicker.
 - **Search & navigation**: `/` to search, `n`/`N` to jump, `t` for a table-of-contents overlay, `?` for keybindings.
 - **Azure DevOps `[[_TOC_]]`** marker support, plus a sticky TOC sidebar in the browser.
-- **Diagrams** from fenced code blocks: **mermaid**, **D2**, **Graphviz** (`graphviz`/`dot`), and **PlantUML** (`plantuml`/`puml`) — rendered to images inline in the terminal (via Sixel) and shown natively in the browser. Render failures are reported inline with an actionable message.
-- **Math** via KaTeX (browser) / a Unicode approximation (terminal), **code** via TextMate (terminal) / highlight.js (browser).
+- **Diagrams** from fenced code blocks: **mermaid**, **D2**, **Graphviz** (`graphviz`/`dot`), and **PlantUML** (`plantuml`/`puml`) — plus Azure DevOps `::: mermaid` containers — rendered to images inline in the terminal (via Sixel) and shown natively in the browser. Render failures are reported inline with an actionable message.
+- **Math** via KaTeX (browser) / a Unicode approximation (terminal) for `$…$`, `$$…$$` and ```` ```math ```` fences, including fractions, roots, accents, `\mathbb`/`\mathcal`, matrices and cases.
 - **Multi-file wiki navigation**: follow local `.md` links with back/forward history (sandboxed to the document's directory). Opening an external link asks for confirmation first.
 - **Browser mode** (`--browser`) for pixel-perfect rendering, served locally (loopback only) from an embedded web server. The browser view adds: **export** the current document to a self-contained `.html`, a **high-quality WYSIWYG `.pdf`** (matches the on-screen theme — dark stays dark — on a single page auto-sized to the content, nothing cropped), or **Print to PDF** (the browser's own print dialog); **copy buttons** on code blocks and **permalink anchors** on headings; a **diagram lightbox** (click any mermaid/D2 diagram to zoom/pan, copy or open its SVG); **project-wide search** across the wiki and a **`Ctrl+P` quick-open** file palette; and **persisted** theme/zen/sidebar preferences.
 - **Export & piping**: `--export` writes a self-contained `.html` or `.pdf`; with a redirected stdout (or stdin via `-`) it renders to text, so `readmd file.md | less -R` and `cat file.md | readmd -` just work.
@@ -47,6 +50,8 @@ Options:
                        (e.g. `readmd f.md --color always | less -R`), or never.
       --root <dir>     Directory local links/images may reach (default: the
                        document's folder), so ../sibling.md links work in a wiki.
+  -w, --width <cols>   Maximum reading width (content is centred when the terminal
+                       is wider); also the wrap width for --print.
       --theme <theme>  Color theme: dark, light, or auto (auto honors COLORFGBG,
                        else defaults to dark).
       --background <b>  'solid' paints a solid themed background (overrides terminal
@@ -151,6 +156,10 @@ ignored.
   "background": "solid",      // "solid" | "terminal"
   "d2Path": "/usr/local/bin/d2",
   "graphics": "auto",         // "sixel" | "half-block" | "none" | "auto" (inline image mode)
+  "maxWidth": 100,            // reading width in columns (0/absent = full terminal width)
+  "lineNumbers": true,        // line-number gutter in code blocks
+  "tabSize": 4,               // tab stop for tabs inside code blocks
+  "smartPunctuation": false,  // “smart” quotes, – dashes and … ellipses
 
   // Custom terminal color themes (any omitted color falls back to the dark/light base):
   "themes": {

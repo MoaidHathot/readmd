@@ -62,6 +62,9 @@ public static class TocExtractor
             case HtmlEntityInline entity:
                 sb.Append(entity.Transcoded.AsSpan());
                 break;
+            case Markdig.Extensions.SmartyPants.SmartyPant pant:
+                sb.Append(SmartyPantText(pant));
+                break;
             case LineBreakInline:
                 sb.Append(' ');
                 break;
@@ -70,6 +73,23 @@ public static class TocExtractor
                 break;
         }
     }
+
+    /// <summary>The typographic character a SmartyPants replacement stands for.</summary>
+    public static string SmartyPantText(Markdig.Extensions.SmartyPants.SmartyPant pant) => pant.Type switch
+    {
+        Markdig.Extensions.SmartyPants.SmartyPantType.LeftQuote => "‘",
+        Markdig.Extensions.SmartyPants.SmartyPantType.RightQuote => "’",
+        Markdig.Extensions.SmartyPants.SmartyPantType.LeftDoubleQuote => "“",
+        Markdig.Extensions.SmartyPants.SmartyPantType.RightDoubleQuote => "”",
+        Markdig.Extensions.SmartyPants.SmartyPantType.LeftAngleQuote => "«",
+        Markdig.Extensions.SmartyPants.SmartyPantType.RightAngleQuote => "»",
+        Markdig.Extensions.SmartyPants.SmartyPantType.Ellipsis => "…",
+        Markdig.Extensions.SmartyPants.SmartyPantType.Dash2 => "–",
+        Markdig.Extensions.SmartyPants.SmartyPantType.Dash3 => "—",
+        Markdig.Extensions.SmartyPants.SmartyPantType.Quote => "'",
+        Markdig.Extensions.SmartyPants.SmartyPantType.DoubleQuote => "\"",
+        _ => pant.ToString() ?? "",
+    };
 
     private static string Slug(string text)
     {

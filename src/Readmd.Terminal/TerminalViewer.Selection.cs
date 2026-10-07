@@ -53,8 +53,9 @@ public sealed partial class TerminalViewer
         if (screenRow >= ViewportHeight) return;
         int line = _scroll + screenRow;
         if (line < 0 || line >= _lines.Count) return;
-        _selAnchor = (line, screenCol);
-        _selCursor = (line, screenCol);
+        int col = Math.Max(0, screenCol - ContentOffset);
+        _selAnchor = (line, col);
+        _selCursor = (line, col);
         _dirty = true;
     }
 
@@ -67,7 +68,7 @@ public sealed partial class TerminalViewer
         else if (screenRow >= ViewportHeight) { ScrollBy(1); screenRow = ViewportHeight - 1; }
 
         int line = Math.Clamp(_scroll + screenRow, 0, Math.Max(0, _lines.Count - 1));
-        _selCursor = (line, Math.Max(0, screenCol));
+        _selCursor = (line, Math.Max(0, screenCol - ContentOffset));
         _dirty = true;
     }
 
