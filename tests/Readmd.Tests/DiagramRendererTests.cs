@@ -8,6 +8,7 @@ public class DiagramRendererTests
     private static DiagramRenderer NewRenderer() => new(new DiagramRendererOptions
     {
         BestEffort = true, // never launch Chromium in tests
+        AllowNetwork = false, // never call kroki.io from tests
         D2Path = "readmd-no-such-d2",
         GraphvizPath = "readmd-no-such-dot",
         PlantUmlPath = "readmd-no-such-plantuml",
@@ -26,6 +27,61 @@ public class DiagramRendererTests
         var result = await renderer.RenderAsync(req, DiagramTheme.Dark);
         Assert.Equal(DiagramStatus.Failed, result.Status);
         Assert.False(string.IsNullOrWhiteSpace(result.Error));
+        Assert.Contains("offline", result.Error);   // the Kroki fallback was skipped, and says so
+    }
+
+    [Fact]
+    public async Task Kroki_only_kinds_explain_offline_mode()
+    {
+        await using var renderer = NewRenderer();
+        var result = await renderer.RenderAsync(DiagramRequest.Create(DiagramKind.Ditaa, "+--+\n|  |\n+--+"), DiagramTheme.Dark);
+        Assert.Equal(DiagramStatus.Failed, result.Status);
+        Assert.Contains("Kroki", result.Error);
+        Assert.Contains("ditaa", result.Error);
+    }
+
+    [Fact]
+    public async Task Backends_report_kroki_when_online_and_unavailable_when_offline()
+    {
+        await using var offline = new DiagramRenderer(new DiagramRendererOptions { AllowNetwork = false, D2Path = "readmd-no-such-d2", CacheDirectory = Path.Combine(Path.GetTempPath(), "readmd-test-cache-" + Guid.NewGuid().ToString("N")) });
+        Assert.Null(offline.KrokiUrl);
+        Assert.Contains("unavailable", offline.DescribeBackends()["d2"]);
+        await using var online = new DiagramRenderer(new DiagramRendererOptions { D2Path = "readmd-no-such-d2", KrokiUrl = "https://kroki.example.test/", CacheDirectory = Path.Combine(Path.GetTempPath(), "readmd-test-cache-" + Guid.NewGuid().ToString("N")) });
+        Assert.Equal("https://kroki.example.test", online.KrokiUrl);
+        Assert.Equal("kroki", online.DescribeBackends()["d2"]);
+    }
+
+    [Fact]
+    public async Task Text_rendering_is_null_without_a_local_tool()
+    {
+        await using var renderer = NewRenderer();
+        Assert.Null(await renderer.RenderTextAsync(DiagramRequest.Create(DiagramKind.D2, "a -> b")));
+        Assert.Null(await renderer.RenderTextAsync(DiagramRequest.Create(DiagramKind.Mermaid, "graph TD; A-->B;")));
+    }
+
+    [Theory]
+    [InlineData("mermaid", DiagramKind.Mermaid)]
+    [InlineData("mmd", DiagramKind.Mermaid)]
+    [InlineData("gv", DiagramKind.Graphviz)]
+    [InlineData("plant-uml", DiagramKind.PlantUml)]
+    [InlineData("c4", DiagramKind.C4PlantUml)]
+    [InlineData("ditaa", DiagramKind.Ditaa)]
+    [InlineData("vega-lite", DiagramKind.VegaLite)]
+    [InlineData("drawio", DiagramKind.DiagramsNet)]
+    [InlineData("d2 {theme=1}", DiagramKind.D2)]
+    public void Fence_aliases_map_to_kinds(string info, DiagramKind expected)
+    {
+        Assert.Equal(expected, DiagramExtractor.MapKind(info));
+    }
+
+    [Fact]
+    public void Kroki_share_url_is_deflate_base64url()
+    {
+        using var k = new KrokiRenderer("https://kroki.io");
+        var url = k.ShareUrl(DiagramRequest.Create(DiagramKind.Graphviz, "digraph { a -> b }"));
+        Assert.StartsWith("https://kroki.io/graphviz/svg/", url);
+        Assert.DoesNotContain("+", url[("https://kroki.io/graphviz/svg/".Length)..]);
+        Assert.DoesNotContain("/", url[("https://kroki.io/graphviz/svg/".Length)..]);
     }
 
     [Fact]

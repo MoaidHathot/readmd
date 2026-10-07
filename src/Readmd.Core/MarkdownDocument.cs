@@ -1,7 +1,9 @@
 namespace Readmd.Core;
 
 /// <summary>
-/// The kind of diagram embedded in a fenced code block that readmd renders to an image.
+/// The kind of diagram embedded in a fenced code block that readmd renders to an image. The first
+/// four have local renderers; the rest are rendered through a Kroki server (self-hostable) unless
+/// the network is disabled.
 /// </summary>
 public enum DiagramKind
 {
@@ -9,6 +11,32 @@ public enum DiagramKind
     D2,
     Graphviz,
     PlantUml,
+    // Kroki-only kinds (https://kroki.io):
+    Ditaa,
+    Svgbob,
+    Nomnoml,
+    Pikchr,
+    WaveDrom,
+    Vega,
+    VegaLite,
+    Bpmn,
+    Excalidraw,
+    TikZ,
+    Erd,
+    Dbml,
+    Structurizr,
+    C4PlantUml,
+    BlockDiag,
+    SeqDiag,
+    ActDiag,
+    NwDiag,
+    PacketDiag,
+    RackDiag,
+    ByteField,
+    Umlet,
+    WireViz,
+    Symbolator,
+    DiagramsNet,
 }
 
 /// <summary>

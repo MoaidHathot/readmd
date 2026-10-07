@@ -343,6 +343,7 @@ public sealed partial class TerminalViewer
         foreach (var (key, result) in _diagramResults)
         {
             if (result.Status != DiagramStatus.Ready || result.Png is null) continue;
+            if (ShowsSource(key)) continue;
             int anchorIndex = FindDiagramLine(key);
             if (anchorIndex < 0) continue;
             int rowOnScreen = anchorIndex - _scroll;
@@ -646,6 +647,7 @@ public sealed partial class TerminalViewer
         foreach (var (key, result) in _diagramResults)
         {
             if (result.Status != DiagramStatus.Ready || result.Png is null) continue;
+            if (ShowsSource(key)) continue;   // rows hold the source/box art instead
 
             var scaled = GetScaledDiagram(key, result);
             int imgRows = (int)Math.Ceiling(scaled.Height / (double)_cellHeightPx);

@@ -471,11 +471,14 @@ public sealed partial class MarkdownTerminalRenderer
     }
 
     /// <summary>Lays out <paramref name="code"/> as a framed, highlighted code block and returns its lines
-    /// (used by the viewer to show diagram source inline). Highlighting is synchronous here.</summary>
+    /// (used by the viewer to show diagram source inline). Plain colour when highlighting is deferred.</summary>
     public List<DisplayLine> RenderCodeLines(string code, string language, int indent)
     {
         _lines.Clear();
-        var spans = CodeHighlighter.Highlight(ExpandTabs(code), language, Theme);
+        var expanded = ExpandTabs(code);
+        var spans = DeferHighlighting && CodeHighlighter.TryGetCached(expanded, language, Theme) is null
+            ? CodeHighlighter.Plain(expanded, Theme)
+            : CodeHighlighter.Highlight(expanded, language, Theme);
         EmitCodeBlock(spans, indent, language, ++_blockCounter);
         var result = new List<DisplayLine>(_lines);
         _lines.Clear();
@@ -791,14 +794,7 @@ public sealed partial class MarkdownTerminalRenderer
         AddBlank();
     }
 
-    internal static string DiagramLabel(DiagramKind kind) => kind switch
-    {
-        DiagramKind.Mermaid => "Mermaid",
-        DiagramKind.D2 => "D2",
-        DiagramKind.Graphviz => "Graphviz",
-        DiagramKind.PlantUml => "PlantUML",
-        _ => kind.ToString(),
-    };
+    internal static string DiagramLabel(DiagramKind kind) => DiagramExtractor.Label(kind);
 
     private readonly Dictionary<string, DiagramRequest> _pendingDiagrams = [];
     public IReadOnlyDictionary<string, DiagramRequest> PendingDiagrams => _pendingDiagrams;

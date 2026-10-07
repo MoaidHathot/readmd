@@ -29,6 +29,12 @@ public sealed class ReadmdConfig
     /// <summary>Path to the <c>plantuml</c> launcher (for <c>plantuml</c>/<c>puml</c> code blocks).</summary>
     [JsonPropertyName("plantUmlPath")] public string? PlantUmlPath { get; set; }
 
+    /// <summary>Kroki server for diagram kinds without a local tool (default https://kroki.io; self-host for privacy).</summary>
+    [JsonPropertyName("krokiUrl")] public string? KrokiUrl { get; set; }
+
+    /// <summary>Use Kroki when a local diagram tool is missing (default true).</summary>
+    [JsonPropertyName("krokiFallback")] public bool? KrokiFallback { get; set; }
+
     /// <summary>Inline-graphics mode for the terminal: "sixel", "half-block", "none", or "auto".</summary>
     [JsonPropertyName("graphics")] public string? Graphics { get; set; }
 
@@ -109,6 +115,8 @@ public sealed class ReadmdConfig
             MermaidCliPath = overrides.MermaidCliPath ?? MermaidCliPath,
             GraphvizPath = overrides.GraphvizPath ?? GraphvizPath,
             PlantUmlPath = overrides.PlantUmlPath ?? PlantUmlPath,
+            KrokiUrl = overrides.KrokiUrl ?? KrokiUrl,
+            KrokiFallback = overrides.KrokiFallback ?? KrokiFallback,
             Graphics = overrides.Graphics ?? Graphics,
             MaxWidth = overrides.MaxWidth ?? MaxWidth,
             LineNumbers = overrides.LineNumbers ?? LineNumbers,

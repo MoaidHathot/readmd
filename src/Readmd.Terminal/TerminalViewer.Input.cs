@@ -9,6 +9,15 @@ public sealed partial class TerminalViewer
     // ---------------- diagram rendering ----------------
     private void KickoffDiagramRenders(bool forceDiagramRerender = false)
     {
+        // Text-only output (graphics: none): render each diagram as box art (D2/PlantUML) when a
+        // backend can, else show its source — never a blank caption.
+        if (_graphicsMode == GraphicsMode.None)
+        {
+            KickoffTextDiagrams();
+            KickoffImageLoads();
+            return;
+        }
+
         // Pre-seed any cached results synchronously (skip when forcing a theme re-render).
         if (!forceDiagramRerender)
         {
@@ -32,6 +41,8 @@ public sealed partial class TerminalViewer
             _ = Task.Run(async () =>
             {
                 var result = await _diagrams.RenderAsync(req, _diagramTheme, _lifetimeCts.Token);
+                // A failed image render still has a useful text fallback for D2/PlantUML.
+                string? text = result.Status == DiagramStatus.Ready ? null : await _diagrams.RenderTextAsync(req, _lifetimeCts.Token);
                 lock (_stateLock)
                 {
                     // Only replace if we got a good render (keeps the old image visible on failure).
@@ -39,13 +50,15 @@ public sealed partial class TerminalViewer
                     {
                         _diagramResults[key] = result;
                         ReserveDiagramRows(key, result);
+                        if (result.Backend == "kroki") NoteKroki();
                     }
                     else if (!_diagramResults.ContainsKey(key) || _diagramResults[key].Status != DiagramStatus.Ready)
                     {
                         // No good image to fall back to: show the error inline so the user knows why
-                        // the diagram is blank (e.g. d2 missing, Chromium download failed).
+                        // the diagram is blank (e.g. d2 missing, Chromium download failed), plus the
+                        // text rendering or source so the content isn't lost.
                         _diagramResults[key] = result;
-                        ShowDiagramError(key, result.Error);
+                        ShowDiagramError(key, result.Error, textArt: text);
                     }
                     ClearDiagramCaches();
                     _forceHardClear = true;
@@ -55,6 +68,72 @@ public sealed partial class TerminalViewer
         }
 
         KickoffImageLoads();
+    }
+
+    private bool _krokiNoted;
+    private void NoteKroki()
+    {
+        if (_krokiNoted) return;
+        _krokiNoted = true;
+        SetStatus("Diagram rendered via Kroki (diagram text was sent to the server) — set krokiUrl for a local server, or --offline", 6);
+    }
+
+    /// <summary>graphics: none — fill each diagram's rows with its text rendering (or source).</summary>
+    private void KickoffTextDiagrams()
+    {
+        foreach (var (key, request) in _pendingDiagrams)
+        {
+            if (_diagramRequested.Contains(key)) continue;
+            _diagramRequested.Add(key);
+            var req = request;
+            // Source immediately (so nothing is blank), replaced by box art when it arrives.
+            lock (_stateLock) { ShowDiagramText(key, null, req); }
+            _ = Task.Run(async () =>
+            {
+                var text = await _diagrams.RenderTextAsync(req, _lifetimeCts.Token);
+                if (text is null) return;
+                lock (_stateLock) { ShowDiagramText(key, text, req); _dirty = true; }
+            });
+        }
+    }
+
+    /// <summary>
+    /// Replaces the reserved rows under a diagram anchor with its text rendering (box art) or, when
+    /// none is available, its source as a code block.
+    /// </summary>
+    private void ShowDiagramText(string key, string? textArt, DiagramRequest request)
+    {
+        var list = _lines;
+        string reserveTag = "reserve:" + key;
+        for (int anchor = list.Count - 1; anchor >= 0; anchor--)
+        {
+            if (list[anchor].DiagramKey != key) continue;
+            int existing = 0;
+            while (anchor + 1 + existing < list.Count && list[anchor + 1 + existing].DiagramKey == reserveTag) existing++;
+            for (int i = 0; i < existing; i++) list.RemoveAt(anchor + 1);
+            var rows = textArt is not null
+                ? TextArtLines(textArt, list[anchor].DiagramIndent)
+                : SourceBlockLines(request.Source, request.Kind.ToString().ToLowerInvariant(), list[anchor].DiagramIndent);
+            for (int i = rows.Count - 1; i >= 0; i--) { rows[i].DiagramKey = reserveTag; list.Insert(anchor + 1, rows[i]); }
+            int delta = rows.Count - existing;
+            if (delta != 0 && anchor < _scroll) _scroll = Math.Max(0, _scroll + delta);
+        }
+    }
+
+    /// <summary>Lays out box-art text as display lines (monospace, no wrapping — art must not reflow).</summary>
+    private List<DisplayLine> TextArtLines(string art, int indent)
+    {
+        var lines = new List<DisplayLine>();
+        int width = Math.Max(10, ContentWidth - indent - 2);
+        foreach (var raw in art.Replace("\r\n", "\n").Split('\n'))
+        {
+            var line = new DisplayLine();
+            line.Spans.Add(new StyledSpan(new string(' ', indent + 2)));
+            line.Spans.Add(new StyledSpan(TextWidth.TrimToWidth(raw.TrimEnd(), width), _theme.Text));
+            lines.Add(line);
+        }
+        while (lines.Count > 0 && lines[^1].PlainText.Trim().Length == 0) lines.RemoveAt(lines.Count - 1);
+        return lines;
     }
 
     private void KickoffImageLoads()
@@ -152,6 +231,12 @@ public sealed partial class TerminalViewer
     /// </summary>
     private void ReserveDiagramRows(string key, DiagramResult result, bool adjustScroll = true)
     {
+        // A diagram toggled to its source (or text-only mode) gets source rows instead of image rows.
+        if (ShowsSource(key) && _pendingDiagrams.TryGetValue(key, out var req))
+        {
+            ShowDiagramText(key, result.Text, req);
+            return;
+        }
         int needed = DiagramRows(result);
         _lastKnownRows[key] = needed;
         var list = _lines;
@@ -185,7 +270,7 @@ public sealed partial class TerminalViewer
     /// Renders a failed diagram's error inline: recolours each anchor caption red and inserts the
     /// wrapped error message on the reserved rows beneath it, so the user sees why nothing rendered.
     /// </summary>
-    private void ShowDiagramError(string key, string? error, string label = "diagram error")
+    private void ShowDiagramError(string key, string? error, string label = "diagram error", string? textArt = null)
     {
         var list = _lines;
         var msg = string.IsNullOrWhiteSpace(error) ? "could not be rendered" : error!.Trim();
@@ -215,9 +300,11 @@ public sealed partial class TerminalViewer
             while (anchor + 1 + existing < list.Count && list[anchor + 1 + existing].DiagramKey == reserveTag) existing++;
             for (int i = 0; i < existing; i++) list.RemoveAt(anchor + 1);
 
-            // For diagrams, show the source beneath the error so the content isn't lost.
+            // For diagrams, show the text rendering (or the source) beneath the error so the
+            // content isn't lost.
             var sourceLines = new List<DisplayLine>();
-            if (_blocks.TryGetValue(cap.BlockId, out var info) && info.Kind == BlockKind.Diagram && info.Text is { Length: > 0 } src)
+            if (textArt is not null) sourceLines = TextArtLines(textArt, cap.DiagramIndent);
+            else if (_blocks.TryGetValue(cap.BlockId, out var info) && info.Kind == BlockKind.Diagram && info.Text is { Length: > 0 } src)
                 sourceLines = SourceBlockLines(src, info.Language ?? "", cap.DiagramIndent);
 
             for (int i = sourceLines.Count - 1; i >= 0; i--) { sourceLines[i].DiagramKey = reserveTag; list.Insert(anchor + 1, sourceLines[i]); }
@@ -787,14 +874,20 @@ public sealed partial class TerminalViewer
     {
         var info = ActiveBlock();
         if (info is null || info.Kind != BlockKind.Diagram || info.DiagramKey is null) { SetStatus("Not on a diagram (scroll it to the top of the screen)"); return; }
+        var key = info.DiagramKey;
         lock (_stateLock)
         {
-            if (!_showSource.Remove(info.DiagramKey)) _showSource.Add(info.DiagramKey);
+            bool showing = !_showSource.Remove(key);
+            if (showing) _showSource.Add(key);
             Project();
             ClearDiagramCaches();
             _forceHardClear = true;
         }
+        SetStatus(_showSource.Contains(key) ? "Showing diagram source (s to show the image)" : "Showing diagram image", 2);
     }
+
+    /// <summary>True when this diagram's rows should show text (source/box art) instead of the image.</summary>
+    private bool ShowsSource(string key) => _showSource.Contains(key) || _graphicsMode == GraphicsMode.None;
 
     // ---------------- links & navigation ----------------
     private int _activeLinkOrdinal = -1;   // Tab-cycled link (index into _links), -1 = none

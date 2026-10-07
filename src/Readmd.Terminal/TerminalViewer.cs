@@ -438,6 +438,11 @@ public sealed partial class TerminalViewer : IAsyncDisposable
         foreach (var (key, result) in _diagramResults)
             if (result.Status == DiagramStatus.Ready)
                 ReserveDiagramRows(key, result, adjustScroll: false);
+        // Diagrams shown as text that have no raster result yet (graphics: none, or toggled before
+        // the render finished) still need their source/box-art rows after a re-projection.
+        foreach (var (key, req) in _pendingDiagrams)
+            if (ShowsSource(key) && !(_diagramResults.TryGetValue(key, out var r) && r.Status == DiagramStatus.Ready))
+                ShowDiagramText(key, _diagramResults.TryGetValue(key, out var pr) ? pr.Text : null, req);
 
         _scroll = Math.Clamp(ResolveAnchor(anchor), 0, Math.Max(0, _lines.Count - 1));
         _dirty = true;

@@ -16,6 +16,15 @@ public static class DocumentTextRenderer
     public sealed record Options(bool LineNumbers = true, int TabSize = 4, bool SmartPunctuation = false, ColorMode Colors = ColorMode.TrueColor, bool Hyperlinks = true)
     {
         public static readonly Options Default = new();
+
+        /// <summary>
+        /// Optional text renderer for diagrams (box art from d2/plantuml). When it returns null for a
+        /// diagram, the diagram's source is printed as a code block instead of a bare caption.
+        /// </summary>
+        public Func<DiagramRequest, string?>? DiagramText { get; init; }
+
+        /// <summary>Print diagram source as a code block when no text rendering is available (default true).</summary>
+        public bool DiagramSourceFallback { get; init; } = true;
     }
 
     public static string Render(string markdown, bool dark, int width, bool color, Options? options = null)
@@ -39,7 +48,25 @@ public static class DocumentTextRenderer
 
         var sb = new StringBuilder();
         foreach (var line in result.Lines)
+        {
             AppendLine(sb, line, color, options, result.Links);
+            // Diagrams: box art when a backend can produce it, else the source — never a bare caption.
+            if (line.DiagramKey is { } key && !key.StartsWith("reserve:") && renderer.PendingDiagrams.TryGetValue(key, out var req))
+            {
+                var art = options.DiagramText?.Invoke(req);
+                if (art is not null)
+                {
+                    foreach (var row in art.Replace("\r\n", "\n").Split('\n'))
+                        sb.Append(new string(' ', line.DiagramIndent + 2)).Append(row.TrimEnd()).Append('\n');
+                }
+                else if (options.DiagramSourceFallback)
+                {
+                    var scratch = new MarkdownTerminalRenderer(theme, Math.Max(20, width) - 1) { LineNumbers = options.LineNumbers, TabSize = options.TabSize, DeferHighlighting = !color };
+                    foreach (var row in scratch.RenderCodeLines(req.Source, req.Kind.ToString().ToLowerInvariant(), line.DiagramIndent))
+                        AppendLine(sb, row, color, options, result.Links);
+                }
+            }
+        }
         return sb.ToString();
     }
 

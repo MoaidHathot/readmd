@@ -311,6 +311,9 @@ root.SetAction(async (parse, ct) =>
         MermaidCliPath = config.MermaidCliPath,
         GraphvizPath = config.GraphvizPath,
         PlantUmlPath = config.PlantUmlPath,
+        KrokiUrl = config.KrokiUrl,
+        KrokiFallback = config.KrokiFallback ?? true,
+        AllowNetwork = !offline,
     });
 
     // Non-interactive modes: stdin always prints; a redirected stdout implies --print.
@@ -326,7 +329,7 @@ root.SetAction(async (parse, ct) =>
         if (shouldPrint)
         {
             var printColors = colorMode == Readmd.Terminal.ColorMode.None ? Readmd.Terminal.ColorMode.TrueColor : colorMode;
-            return await RunPrintAsync(full, fromStdin, dark, ResolveColor(colorArg ?? config.Color), layout, printColors, viewerPrefs.Hyperlinks, ct);
+            return await RunPrintAsync(full, fromStdin, dark, ResolveColor(colorArg ?? config.Color), layout, printColors, viewerPrefs.Hyperlinks, GetDiagrams, ct);
         }
         if (browser)
         {
@@ -462,7 +465,7 @@ static async Task<int> RunExportAsync(string full, bool fromStdin, string export
 }
 
 // --print / non-TTY: render to stdout (ANSI when stdout is a terminal, plain text otherwise).
-static async Task<int> RunPrintAsync(string full, bool fromStdin, bool dark, bool color, LayoutSettings layout, Readmd.Terminal.ColorMode colors, bool hyperlinks, CancellationToken ct)
+static async Task<int> RunPrintAsync(string full, bool fromStdin, bool dark, bool color, LayoutSettings layout, Readmd.Terminal.ColorMode colors, bool hyperlinks, Func<DiagramRenderer> getDiagrams, CancellationToken ct)
 {
     var markdown = await ReadInputAsync(full, fromStdin, ct);
     Timing.Mark("file read");
@@ -471,8 +474,35 @@ static async Task<int> RunPrintAsync(string full, bool fromStdin, bool dark, boo
     if (color && (markdown.Contains("```") || markdown.Contains("~~~"))) _ = CodeHighlighter.WarmUpAsync(dark);
     var width = !Console.IsOutputRedirected && Console.WindowWidth > 0 ? Console.WindowWidth : 100;
     if (layout.MaxWidth > 0) width = Math.Min(width, layout.MaxWidth + 1);
+
+    // Diagrams print as box art when d2/plantuml can produce it (rendered in parallel ahead of the
+    // layout, bounded by a short timeout so a pipe never hangs on a slow tool), else as their source.
+    // A cheap substring check keeps documents without such fences from paying for a second parse.
+    Func<DiagramRequest, string?>? diagramText = null;
+    bool mayHaveTextDiagrams = markdown.Contains("d2", StringComparison.OrdinalIgnoreCase) || markdown.Contains("uml", StringComparison.OrdinalIgnoreCase) || markdown.Contains("c4", StringComparison.OrdinalIgnoreCase);
+    var requests = mayHaveTextDiagrams
+        ? DiagramExtractor.Extract(Markdig.Markdown.Parse(FrontMatter.StripToml(markdown).Markdown))
+            .Where(r => r.Kind is DiagramKind.D2 or DiagramKind.PlantUml or DiagramKind.C4PlantUml)
+            .DistinctBy(r => r.Key).ToList()
+        : [];
+    if (requests.Count > 0)
+    {
+        var renderer = getDiagrams();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(Math.Min(60, 8 + 4 * requests.Count)));
+        var texts = new Dictionary<string, string?>();
+        try
+        {
+            var results = await Task.WhenAll(requests.Select(async r => (r.Key, Text: await renderer.RenderTextAsync(r, timeout.Token))));
+            foreach (var (k, t) in results) texts[k] = t;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { /* fall back to source */ }
+        diagramText = r => texts.TryGetValue(r.Key, out var t) ? t : null;
+        Timing.Mark("diagram text");
+    }
+
     var text = DocumentTextRenderer.Render(markdown, dark, width, color,
-        new DocumentTextRenderer.Options(layout.LineNumbers, layout.TabSize, layout.SmartPunctuation, colors, hyperlinks));
+        new DocumentTextRenderer.Options(layout.LineNumbers, layout.TabSize, layout.SmartPunctuation, colors, hyperlinks) { DiagramText = diagramText });
     Timing.Mark("rendered");
     // Write UTF-8 bytes straight to the raw stdout stream so box-drawing/Unicode survives a
     // redirected pipe or file regardless of the console's default code page.

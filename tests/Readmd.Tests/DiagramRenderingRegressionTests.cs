@@ -18,6 +18,7 @@ public class DiagramRenderingRegressionTests
 {
     private static DiagramRenderer NewRenderer() => new(new DiagramRendererOptions
     {
+        AllowNetwork = false,   // these tests exercise the LOCAL tool paths only
         CacheDirectory = Path.Combine(Path.GetTempPath(), "readmd-rqtest-" + Guid.NewGuid().ToString("N")),
     });
 

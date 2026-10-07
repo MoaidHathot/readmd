@@ -79,6 +79,32 @@ internal sealed class DiagramCache(string cacheDirectory)
         return result;
     }
 
+    // Text (ASCII art) renderings are theme-independent; stored once per key.
+    private readonly ConcurrentDictionary<string, string> _textMemory = new();
+
+    public string? TryGetText(string key)
+    {
+        if (_textMemory.TryGetValue(key, out var t)) return t;
+        try
+        {
+            var path = Path.Combine(_dir, key + "-" + StyleVersion + ".txt");
+            if (File.Exists(path)) { t = File.ReadAllText(path); _textMemory[key] = t; return t; }
+        }
+        catch { /* ignore */ }
+        return null;
+    }
+
+    public void StoreText(string key, string text)
+    {
+        _textMemory[key] = text;
+        try
+        {
+            Directory.CreateDirectory(_dir);
+            File.WriteAllText(Path.Combine(_dir, key + "-" + StyleVersion + ".txt"), text);
+        }
+        catch { /* best effort */ }
+    }
+
     /// <summary>
     /// Best-effort cleanup of the on-disk cache so it can't grow without bound across versions:
     /// removes files not accessed in the last 30 days, and if the total still exceeds a size cap,
