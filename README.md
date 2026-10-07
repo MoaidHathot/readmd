@@ -43,6 +43,7 @@ Standalone builds are self-contained single-file executables for Windows, Linux 
 - **Open anything**: a file, several files or globs (`docs/**/*.md`), a **directory** (`readmd .` lists its Markdown files, newest first), standard input, or a **remote document** — `https://…/file.md`, a GitHub `blob` URL, or `gh:owner/repo[@ref][/path]` (relative links and images are rewritten against the source). With no argument, the current folder's `README.md` opens.
 - **Browser mode** (`--browser`) for pixel-perfect rendering, served locally (loopback only) from an embedded web server. The browser view adds: **export** the current document to a self-contained `.html`, a **high-quality WYSIWYG `.pdf`** (matches the on-screen theme — dark stays dark — on a single page auto-sized to the content, nothing cropped), or **Print to PDF** (the browser's own print dialog); **copy buttons** on code blocks and **permalink anchors** on headings; a **diagram lightbox** (click any mermaid/D2 diagram to zoom/pan, copy or open its SVG); **project-wide search** across the wiki and a **`Ctrl+P` quick-open** file palette; and **persisted** theme/zen/sidebar preferences.
 - **Export & piping**: `--export` writes a self-contained `.html` or `.pdf`; with a redirected stdout (or stdin via `-`) it renders to text, so `readmd file.md | less -R` and `cat file.md | readmd -` just work.
+- **Presentation mode** (`--slides`, or `Ctrl+S` in any document): one slide per `---` / `<!-- slide -->`, centred on screen with a slide counter and a clock; `<!-- pause -->` reveals a slide step by step, `<!-- notes … -->` (or a `???` line) holds speaker notes shown with `N`; `n`/`p`, `Space`, arrows and `5gg` navigate. `--slides --print` prints a handout.
 
 ## Usage
 
@@ -71,6 +72,7 @@ Options:
       --ascii          Plain ASCII glyphs instead of box drawing and symbols.
       --offline        Never touch the network (no remote images, no online diagram service).
       --no-watch       Don't live-reload on change (W toggles at runtime).
+      --slides         Presentation mode (one slide per --- / <!-- slide -->; Ctrl+S toggles).
   +N, +/pattern        Open at source line N / at the first match for pattern.
       --root <dir>     Directory local links/images may reach (default: the
                        document's folder), so ../sibling.md links work in a wiki.
@@ -155,9 +157,10 @@ Vim-style motions are supported throughout (with count prefixes: `5j`, `12gg`), 
 | `s` | Diagram: toggle image ↔ source | `v` | Focus an image (zoom/pan, `n`/`p` next/prev, `o` app, `b` browser) |
 | `[` | Cycle themes (`themeCycle` in config, else all) | `]` | Toggle solid / transparent background |
 | `o` | Open in browser | `m` | Mark mode (select + copy) |
-| `r` | Re-render | `:` | Command line (`:q`, `:e file`, `:123`, `:export out.pdf`, `:set width=100`, `:theme nord`, `:marks`, …) |
+| `r` | Re-render | `:` | Command line (`:q`, `:e file`, `:123`, `:export out.pdf`, `:set width=100`, `:theme nord`, `:marks`, `:slides`, …) |
 | `T` | TOC sidebar (click an entry to jump) | `e` | Export to HTML/PDF next to the file |
 | `M` + letter / `'` + letter | Set / jump to a bookmark (`''` = back to where you jumped from) | `W` / `Alt+f` | Pause live reload / follow mode (jump to the end on every change) |
+| `Ctrl+S` | Slides on/off (in slides: `n`/`p`/`Space`/arrows move, `N` notes, `5gg` slide 5, `:3` slide 3) | | |
 | `?` | Keybindings overlay | `q` (or `Ctrl+C`) | Quit |
 
 `<details>` blocks start collapsed (like GitHub); fold state survives live reloads. readmd remembers where you were in each file (and your search history) across sessions — `readmd file.md +120` or `+/pattern` overrides that, and `"rememberPosition": false` turns it off.

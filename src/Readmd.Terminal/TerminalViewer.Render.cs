@@ -110,6 +110,7 @@ public sealed partial class TerminalViewer
                 {
                     Thread.Sleep(16);
                     TickPendingChord();
+                    TickSlides();
                     if (_statusMessage is not null && DateTime.UtcNow > _statusUntil)
                     {
                         _statusMessage = null;
@@ -278,7 +279,7 @@ public sealed partial class TerminalViewer
             // Also hard-clear when an overlay (help/TOC) opens or closes so diagrams don't bleed
             // through the panel, or when the cell size changed (font zoom).
             bool anyDiagramVisible = AnyDiagramVisible(height);
-            bool overlayOpen = _helpMode || _tocMode || _paletteMode;
+            bool overlayOpen = _helpMode || _tocMode || _paletteMode || (_slideMode && _showNotes);
             bool scrolled = _scroll != _lastDrawScroll;
             bool overlayChanged = overlayOpen != _overlayOpenLastFrame;
             // An explicit refresh ('r') performs a "clean wipe": render ONE diagram-free frame (text
@@ -323,13 +324,14 @@ public sealed partial class TerminalViewer
 
             // Don't draw Sixel diagrams while an overlay panel is open — they'd bleed through it.
             // Also skip on the single clear-only frame after a deep clear (see above).
-            if (!_helpMode && !_tocMode && !_paletteMode && !suppressDiagramsThisFrame)
+            if (!_helpMode && !_tocMode && !_paletteMode && !(_slideMode && _showNotes) && !suppressDiagramsThisFrame)
                 DrawDiagrams(height);
             DrawSidebar();
             DrawScrollbar(height);
             DrawHintLabels();
             DrawStatusBar();
 
+            if (_slideMode && _showNotes) DrawNotesOverlay();
             if (_tocMode) DrawTocOverlay();
             if (_paletteMode) DrawPaletteOverlay();
             if (_helpMode) DrawHelpOverlay();
@@ -836,6 +838,10 @@ public sealed partial class TerminalViewer
         {
             left = " " + _statusMessage;
         }
+        else if (_slideMode)
+        {
+            left = SlideStatus();
+        }
         else
         {
             int pct = _lines.Count <= ViewportHeight ? 100
@@ -855,7 +861,8 @@ public sealed partial class TerminalViewer
         var k = _keyMap;
         string j = k.Label(EditorAction.ScrollDown, "j"), kk = k.Label(EditorAction.ScrollUp, "k");
         string find = k.Label(EditorAction.Search, "/"), toc = k.Label(EditorAction.Toc, "t"), quit = k.Label(EditorAction.Quit, "q");
-        string help = width >= 120
+        string help = _slideMode ? SlideHelpHint(width)
+            : width >= 120
             ? $"{j}/{kk}·gg/G move  Ctrl+f/b·d/u page  {find}:search {k.Label(EditorAction.SearchNext, "n")}/N  {toc}:toc  {k.Label(EditorAction.LinkHints, "f")}:links  {k.Label(EditorAction.Yank, "y")}:copy  za:fold  {k.Label(EditorAction.ToggleTheme, "[")}:theme  {k.Label(EditorAction.OpenInBrowser, "o")}:browser  {k.Label(EditorAction.Help, "?")}:help  {quit}:quit "
             : width >= 80
                 ? $"{j}/{kk} gg/G  Ctrl+f/b page  {find}:find  {toc}:toc  {k.Label(EditorAction.LinkHints, "f")}:links  {k.Label(EditorAction.Help, "?")}:help  {quit}:quit "

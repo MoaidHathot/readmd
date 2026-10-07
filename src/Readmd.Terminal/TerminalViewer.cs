@@ -70,6 +70,9 @@ public sealed class TerminalViewerOptions
     /// <summary>Theme names in the order '[' cycles through them (default: every named theme).</summary>
     public IReadOnlyList<string>? ThemeCycle { get; init; }
 
+    /// <summary>Start in presentation mode (--slides): one slide per thematic break / &lt;!-- slide --&gt;.</summary>
+    public bool StartInSlides { get; init; }
+
     /// <summary>Remember the reading position per file (and search history) across sessions.</summary>
     public bool RememberPosition { get; init; } = true;
 
@@ -253,6 +256,7 @@ public sealed partial class TerminalViewer : IAsyncDisposable
             DrawLoadingFrame();
             await LoadAsync(_currentPath, pushHistory: true);
             ApplyStartPosition();
+            if (_options.StartInSlides) EnterSlides(startSourceLine: _options.StartLine);
             if (_options.StartWithPicker) ShowDirectoryPicker();
             else if (_statusMessage is null) SetStatus("press ? for help · f: link hints · Ctrl+P: open file · Enter opens the first link", 5);
             RenderLoop();
@@ -299,15 +303,24 @@ public sealed partial class TerminalViewer : IAsyncDisposable
     /// <summary>Installs a document from its source text (used by LoadAsync and the test harness).</summary>
     internal void LoadMarkdown(string path, string markdown, bool pushHistory)
     {
-        var parsed = ParseToLines(path, markdown);
         bool newFile = !string.Equals(path, _currentPath, StringComparison.OrdinalIgnoreCase) || _allLines.Count == 0;
+        // In slide mode the layout is one slide, not the document: re-split (a reload may have
+        // added/removed slides) and stay on the same slide number.
+        SlideDeck? deck = _slideMode ? SlideDeck.Split(markdown) : null;
+        if (deck is not null)
+        {
+            _deck = deck;
+            _slideIndex = Math.Clamp(_slideIndex, 0, deck.Count - 1);
+            _slideStep = Math.Clamp(_slideStep, 0, deck[_slideIndex].Fragments.Count - 1);
+        }
+        var parsed = ParseToLines(path, LayoutSource(markdown));
 
         lock (_stateLock)
         {
             _currentPath = path;
             _currentMarkdown = markdown;
             if (newFile) _foldOverrides.Clear();
-            ApplyParsed(parsed, keepScrollAnchor: !newFile);
+            ApplyParsed(parsed, keepScrollAnchor: !newFile && !_slideMode);
             _diagramRequested.Clear();
             _dirty = true;
         }
@@ -457,6 +470,15 @@ public sealed partial class TerminalViewer : IAsyncDisposable
             if (ShowsSource(key) && !(_diagramResults.TryGetValue(key, out var r) && r.Status == DiagramStatus.Ready))
                 ShowDiagramText(key, _diagramResults.TryGetValue(key, out var pr) ? pr.Text : null, req);
 
+        if (_slideMode)
+        {
+            // Presentation: a slide that fits is centred vertically; a taller one starts at the top.
+            int pad = (ViewportHeight - _lines.Count) / 2;
+            for (int i = 0; i < pad; i++) _lines.Insert(0, new DisplayLine());
+            _scroll = 0;
+            _dirty = true;
+            return;
+        }
         _scroll = Math.Clamp(ResolveAnchor(anchor), 0, Math.Max(0, _lines.Count - 1));
         _dirty = true;
     }
@@ -482,8 +504,8 @@ public sealed partial class TerminalViewer : IAsyncDisposable
         ParsedDoc? parsed = null;
         try
         {
-            parsed = ParseToLines(_currentPath, _currentMarkdown);
-            ApplyParsed(parsed, keepScrollAnchor: true);
+            parsed = ParseToLines(_currentPath, LayoutSource(_currentMarkdown));
+            ApplyParsed(parsed, keepScrollAnchor: !_slideMode);
         }
         catch { /* keep old layout */ }
         _dirty = true;

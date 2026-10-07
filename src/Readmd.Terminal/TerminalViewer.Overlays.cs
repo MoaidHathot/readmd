@@ -212,6 +212,7 @@ public sealed partial class TerminalViewer
                 (K(EditorAction.ToggleSelectionMode, "m"), "mark mode (drag = select, right-click = copy)"),
                 (K2(EditorAction.OpenInBrowser, EditorAction.Export, "o", "e"), "open in browser / export html·pdf"),
                 (K2(EditorAction.Rerender, EditorAction.Command, "r", ":"), "re-render / command line"),
+                (K(EditorAction.Slides, "Ctrl-s"), _slideMode ? "leave slides (n/p move · N notes · 5gg: slide 5)" : "slides: present --- separated sections"),
                 ($"{K(EditorAction.Help, "?")}  {K(EditorAction.Quit, "q")}", "this help / quit"),
             }),
         ];

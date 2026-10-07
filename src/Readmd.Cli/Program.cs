@@ -73,6 +73,10 @@ var offlineOption = new Option<bool>("--offline")
 {
     Description = "Never touch the network: remote images are not fetched and no online diagram service is used.",
 };
+var slidesOption = new Option<bool>("--slides")
+{
+    Description = "Presentation mode: one slide per '---' / <!-- slide -->, with <!-- pause --> reveals and <!-- notes --> speaker notes (Ctrl+S toggles at runtime).",
+};
 var noWatchOption = new Option<bool>("--no-watch")
 {
     Description = "Don't live-reload when the file changes (W toggles it at runtime).",
@@ -120,6 +124,7 @@ var root = new RootCommand("readmd — a terminal-first Markdown viewer with liv
     asciiOption,
     offlineOption,
     noWatchOption,
+    slidesOption,
 };
 
 // Replace the built-in --version (which prints the bare version) with a branded one that
@@ -222,6 +227,7 @@ root.SetAction(async (parse, ct) =>
     var asciiArg = parse.GetValue(asciiOption);
     var offlineArg = parse.GetValue(offlineOption);
     var noWatch = parse.GetValue(noWatchOption);
+    var slides = parse.GetValue(slidesOption);
 
     // Resolve what to open: stdin, remote URL(s), directories (file picker), globs, plain paths.
     // Offline is decided later (config) but remote fetching needs the network regardless, so a
@@ -385,7 +391,8 @@ root.SetAction(async (parse, ct) =>
         StartSearch: startSearch,
         FileSet: fileSet,
         StartWithPicker: startWithPicker,
-        DisplayName: displayName);
+        DisplayName: displayName,
+        Slides: slides);
     if (widthArg is < 20)
     {
         Console.Error.WriteLine("readmd: --width must be at least 20 columns.");
@@ -423,7 +430,7 @@ root.SetAction(async (parse, ct) =>
             var printColors = colorMode == Readmd.Terminal.ColorMode.None ? Readmd.Terminal.ColorMode.TrueColor : colorMode;
             bool useColor = ResolveColor(colorArg ?? config.Color);
             if (fromStdin || fileSet.Count <= 1)
-                return await RunPrintAsync(full, fromStdin, dark, useColor, layout, printColors, viewerPrefs.Hyperlinks, GetDiagrams, ct);
+                return await RunPrintAsync(full, fromStdin, dark, useColor, layout, printColors, viewerPrefs.Hyperlinks, GetDiagrams, ct, slides);
             // Several files: print each in order, separated by a rule naming the file.
             var stdout = Console.OpenStandardOutput();
             foreach (var f in fileSet)
@@ -431,7 +438,7 @@ root.SetAction(async (parse, ct) =>
                 var header = (Readmd.Terminal.Glyphs.Ascii ? "==== " : "━━━━ ") + Path.GetRelativePath(Directory.GetCurrentDirectory(), f).Replace('\\', '/') + "\n";
                 var hb = System.Text.Encoding.UTF8.GetBytes(header);
                 await stdout.WriteAsync(hb, ct);
-                var code = await RunPrintAsync(f, false, dark, useColor, layout, printColors, viewerPrefs.Hyperlinks, GetDiagrams, ct);
+                var code = await RunPrintAsync(f, false, dark, useColor, layout, printColors, viewerPrefs.Hyperlinks, GetDiagrams, ct, slides);
                 if (code != 0) return code;
             }
             return 0;
@@ -570,9 +577,24 @@ static async Task<int> RunExportAsync(string full, bool fromStdin, string export
 }
 
 // --print / non-TTY: render to stdout (ANSI when stdout is a terminal, plain text otherwise).
-static async Task<int> RunPrintAsync(string full, bool fromStdin, bool dark, bool color, LayoutSettings layout, Readmd.Terminal.ColorMode colors, bool hyperlinks, Func<DiagramRenderer> getDiagrams, CancellationToken ct)
+static async Task<int> RunPrintAsync(string full, bool fromStdin, bool dark, bool color, LayoutSettings layout, Readmd.Terminal.ColorMode colors, bool hyperlinks, Func<DiagramRenderer> getDiagrams, CancellationToken ct, bool slides = false)
 {
     var markdown = await ReadInputAsync(full, fromStdin, ct);
+    if (slides)
+    {
+        // Presentation handout: every slide fully revealed, separated by a numbered rule, notes after.
+        var deck = SlideDeck.Split(markdown);
+        var sb = new System.Text.StringBuilder();
+        for (int i = 0; i < deck.Count; i++)
+        {
+            var slide = deck[i];
+            string rule = Readmd.Terminal.Glyphs.Ascii ? "----" : "────";
+            sb.Append(rule).Append($" Slide {i + 1}/{deck.Count}: {slide.Title} ").Append(rule).Append("\n\n");
+            sb.Append(slide.Markdown.TrimEnd('\n')).Append("\n\n");
+            if (slide.Notes is not null) sb.Append("> **Notes:** ").Append(slide.Notes.Replace("\n", "\n> ")).Append("\n\n");
+        }
+        markdown = sb.ToString();
+    }
     Timing.Mark("file read");
     // Overlap the TextMate registry construction (~35 ms) with the Markdown parse when the document
     // has fenced code and colour is wanted; it's wasted work otherwise.
@@ -672,6 +694,7 @@ static async Task<int> RunTerminalAsync(string file, bool dark, DiagramTheme the
         StartSearch = prefs.StartSearch,
         FileSet = prefs.FileSet,
         StartWithPicker = prefs.StartWithPicker,
+        StartInSlides = prefs.Slides,
         DisplayName = prefs.DisplayName,
         DiagramTheme = theme,
         SolidBackground = solidBackground,
@@ -745,4 +768,4 @@ internal sealed record ViewerPrefs(
     bool ThemeAuto, bool GraphicsAuto, Readmd.Terminal.ColorMode Colors, bool Hyperlinks, int WheelLines, bool ConfirmExternalLinks,
     bool Offline, bool Watch, bool RememberPosition, bool Scrollbar, string? ThemeName,
     IReadOnlyDictionary<string, Readmd.Terminal.TerminalTheme> NamedThemes, IReadOnlyList<string> ThemeCycle, int? StartLine, string? StartSearch,
-    IReadOnlyList<string> FileSet, bool StartWithPicker, string? DisplayName);
+    IReadOnlyList<string> FileSet, bool StartWithPicker, string? DisplayName, bool Slides);

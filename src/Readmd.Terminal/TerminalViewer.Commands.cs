@@ -51,6 +51,7 @@ public sealed partial class TerminalViewer
     {
         "quit", "edit", "toc", "set", "nohlsearch", "export", "open", "help", "fold", "unfold", "foldall", "unfoldall",
         "reload", "copy", "watch", "nowatch", "follow", "theme", "graphics", "width", "ascii", "wrap", "bookmark", "marks", "goto", "browser", "source", "zoom",
+        "slides", "slide", "notes",
     };
 
     private static string CompleteCommand(string text)
@@ -69,10 +70,10 @@ public sealed partial class TerminalViewer
         var name = parts[0].ToLowerInvariant();
         var arg = parts.Length > 1 ? parts[1] : "";
 
-        // :123 → go to source line 123 (the first display line laid out from it).
+        // :123 → go to source line 123 (the first display line laid out from it); slide 123 when presenting.
         if (int.TryParse(name, out var lineNo))
         {
-            GoToSourceLine(lineNo);
+            if (_slideMode) GoToSlide(lineNo); else GoToSourceLine(lineNo);
             return;
         }
         switch (name)
@@ -105,6 +106,9 @@ public sealed partial class TerminalViewer
             case "browser": OpenInBrowser(); return;
             case "source" or "s": ToggleDiagramSource(); return;
             case "zoom": if (int.TryParse(arg, out var z)) { ZoomDiagrams(z - _diagramZoom); } else ResetZoom(); return;
+            case "slides" or "present": if (arg is "off" or "0") { if (_slideMode) ExitSlides(); } else if (arg is "on" or "1") { if (!_slideMode) EnterSlides(); } else ToggleSlides(); return;
+            case "slide": if (!_slideMode) EnterSlides(); if (int.TryParse(arg, out var sn)) GoToSlide(sn); return;
+            case "notes": if (_slideMode) { _showNotes = !_showNotes; _dirty = true; } else SetStatus("Notes are shown in slide mode (:slides)"); return;
             case "set":
             {
                 // :set key=value or :set key value

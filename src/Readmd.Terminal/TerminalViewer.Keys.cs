@@ -69,6 +69,8 @@ public sealed partial class TerminalViewer
             case KeyKind.MouseDrag or KeyKind.MouseDragEnd or KeyKind.MouseRightClick or KeyKind.MouseMiddleClick: return;
         }
 
+        if (_slideMode && HandleSlideKey(key)) return;
+
         var token = KeyMap.TokenFor(key);
         if (token is null) return;
 
@@ -149,6 +151,7 @@ public sealed partial class TerminalViewer
     internal void Execute(EditorAction action, int count = 0)
     {
         int n = Math.Max(1, count);
+        if (_slideMode && ExecuteSlideAction(action, count)) return;
         switch (action)
         {
             case EditorAction.Quit: _running = false; return;
@@ -209,7 +212,7 @@ public sealed partial class TerminalViewer
             case EditorAction.GoBookmark: GoBookmarkPrompt(); return;
             case EditorAction.ToggleWatch: ToggleWatch(); return;
             case EditorAction.Follow: ToggleFollow(); return;
-            case EditorAction.Slides: SetStatus("Presentation mode: run with --slides"); return;
+            case EditorAction.Slides: ToggleSlides(); return;
         }
     }
 
