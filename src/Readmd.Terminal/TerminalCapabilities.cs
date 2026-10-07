@@ -224,6 +224,63 @@ public static class TerminalProbe
         return null;
     }
 
+    /// <summary>Terminal cell size in pixels (CSI 16t reply), when reported.</summary>
+    public static (int WidthPx, int HeightPx)? CellPixelSize => KeyReader.CellPixelSize;
+    /// <summary>Terminal text-area size in pixels (CSI 14t reply), when reported.</summary>
+    public static (int WidthPx, int HeightPx)? WindowPixelSize => KeyReader.WindowPixelSize;
+
+    /// <summary>
+    /// One-shot, synchronous interrogation for tools like <c>readmd doctor</c>: sends the same
+    /// queries as <see cref="Start"/> straight to the terminal, reads replies in raw mode until the
+    /// DA1 answer arrives (terminals reply in order, so DA1 means "everything else is in") or
+    /// <paramref name="timeout"/> elapses, then restores the input mode. Returns false without
+    /// touching anything when stdin/stdout isn't a terminal.
+    /// </summary>
+    public static bool ProbeBlocking(TimeSpan timeout)
+    {
+        if (Console.IsInputRedirected || Console.IsOutputRedirected) return false;
+        EnsureHooked();
+        using var done = new ManualResetEventSlim(false);
+        void OnAny(string seq) { if (seq.StartsWith("[?") && seq.EndsWith('c')) done.Set(); }
+        KeyReader.ReportReceived += OnAny;
+        bool running = true;
+        try
+        {
+            AnsiScreen.EnterRawInput();
+            var q = new System.Text.StringBuilder();
+            q.Append("\e[14t").Append("\e[16t").Append("\e]11;?\e\\").Append("\e[?2026$p");
+            q.Append(AnsiScreen.PassthroughIfTmux("\e_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\e\\"));
+            q.Append("\e[>0q").Append("\e[c");
+            var stdout = Console.OpenStandardOutput();
+            var bytes = System.Text.Encoding.UTF8.GetBytes(q.ToString());
+            stdout.Write(bytes, 0, bytes.Length);
+            stdout.Flush();
+
+            // The reader thread parses replies and routes reports to OnReport via ReportReceived.
+            // On Unix it may stay blocked in stdin.Read if the terminal never answers; it's a
+            // background thread, so it can't keep a one-shot process alive.
+            var reader = new Thread(() =>
+            {
+                try { foreach (var _ in KeyReader.Read(() => running)) { if (!running) break; } }
+                catch { /* terminal went away */ }
+            }) { IsBackground = true, Name = "readmd-probe" };
+            reader.Start();
+            done.Wait(timeout);
+            running = false;
+            // The Windows reader polls every 100 ms and restores the console mode it found when it
+            // exits; let it finish first so our own restore below is the last word. (On Unix the
+            // thread may be blocked in stdin.Read — the join simply times out.)
+            reader.Join(TimeSpan.FromMilliseconds(400));
+            return true;
+        }
+        finally
+        {
+            running = false;
+            KeyReader.ReportReceived -= OnAny;
+            AnsiScreen.RestoreRawInput();
+        }
+    }
+
     /// <summary>Resets probe state (tests).</summary>
     internal static void Reset()
     {

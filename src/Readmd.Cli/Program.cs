@@ -165,6 +165,43 @@ installPdfCommand.SetAction(_ =>
 });
 root.Subcommands.Add(installPdfCommand);
 
+// `readmd doctor` — report terminal capabilities, config, diagram backends, PDF readiness.
+var noProbeOption = new Option<bool>("--no-probe") { Description = "Skip the live terminal interrogation (DA1/kitty/OSC 11 queries)." };
+var doctorCommand = new Command("doctor", "Check this machine: terminal capabilities, colour depth, config files, diagram tools, PDF export, clipboard.") { noProbeOption, offlineOption, asciiOption };
+doctorCommand.SetAction(async (parse, ct) =>
+{
+    Readmd.Terminal.Glyphs.Ascii = parse.GetValue(asciiOption) || Environment.GetEnvironmentVariable("READMD_ASCII") is "1" or "true";
+    return await Doctor.RunAsync(version, parse.GetValue(offlineOption), parse.GetValue(noProbeOption), ct);
+});
+root.Subcommands.Add(doctorCommand);
+
+// `readmd themes` — list built-in and configured themes with swatches.
+var plainOption = new Option<bool>("--plain") { Description = "No colour swatches; print hex values instead." };
+var sampleOption = new Option<string?>("--sample") { Description = "Heading text used in the sample line." };
+var themesCommand = new Command("themes", "List the available colour themes (built-in and from your config) with swatches.") { plainOption, sampleOption };
+themesCommand.SetAction(parse => ConfigCommands.Themes(parse.GetValue(plainOption), parse.GetValue(sampleOption)));
+root.Subcommands.Add(themesCommand);
+
+// `readmd config path|init|validate|schema`
+var configCommand = new Command("config", "Inspect, create or validate readmd's configuration files.");
+var quietOption = new Option<bool>("--quiet", ["-q"]) { Description = "Print only the user config path." };
+var configPath = new Command("path", "Show where readmd reads configuration from (user file, project file, state).") { quietOption };
+configPath.SetAction(parse => ConfigCommands.Path_(parse.GetValue(quietOption)));
+var projectOption = new Option<bool>("--project") { Description = "Create a project-level .readmd.json in the current directory instead of the user config." };
+var forceOption = new Option<bool>("--force") { Description = "Overwrite an existing file." };
+var configInit = new Command("init", "Write a commented starter config file.") { projectOption, forceOption };
+configInit.SetAction(parse => ConfigCommands.Init(parse.GetValue(projectOption), parse.GetValue(forceOption)));
+var validateFile = new Argument<string?>("file") { Description = "Config file to check (default: the user config and any project .readmd.json).", Arity = ArgumentArity.ZeroOrOne };
+var configValidate = new Command("validate", "Parse a config file and report unknown keys, bad values, invalid colours and key chords.") { validateFile };
+configValidate.SetAction(parse => ConfigCommands.Validate(parse.GetValue(validateFile)));
+var configSchema = new Command("schema", "Print the JSON Schema for the config file (for editor validation).");
+configSchema.SetAction(_ => { Console.Out.Write(ConfigCommands.Schema()); return 0; });
+configCommand.Subcommands.Add(configPath);
+configCommand.Subcommands.Add(configInit);
+configCommand.Subcommands.Add(configValidate);
+configCommand.Subcommands.Add(configSchema);
+root.Subcommands.Add(configCommand);
+
 root.SetAction(async (parse, ct) =>
 {
     Timing.Mark("args parsed");
@@ -300,18 +337,22 @@ root.SetAction(async (parse, ct) =>
     if (browser && (bestEffort || backgroundStr is "solid" or "opaque" or "on"))
         Console.Error.WriteLine("readmd: note — --best-effort and --background only affect terminal mode and are ignored with --browser.");
 
-    // Resolve the theme: a custom config theme name, or built-in dark/light/auto.
+    // Every theme the viewer can switch to with `:theme <name>` / `[`: built-ins, then config.
+    var namedThemes = ThemeCatalog.Build(config);
+    var themeCycle = ThemeCatalog.Cycle(config, namedThemes);
+
+    // Resolve the theme: a named theme (built-in or from config), or dark/light/auto.
     Readmd.Terminal.TerminalTheme? customTheme = null;
     bool dark;
-    if (config.Themes is not null && config.Themes.TryGetValue(themeStr, out var colorTheme))
+    if (themeStr is not ("dark" or "light" or "auto") && namedThemes.TryGetValue(themeStr, out var picked))
     {
-        customTheme = Readmd.Terminal.TerminalTheme.FromColorTheme(colorTheme);
-        dark = colorTheme.Dark;
+        customTheme = picked;
+        dark = picked.IsDark;
     }
     else
     {
-        if (themeStr is not ("dark" or "light" or "auto") && themeArg is not null)
-            Console.Error.WriteLine($"readmd: note — unknown theme '{themeStr}', using auto.");
+        if (themeStr is not ("dark" or "light" or "auto"))
+            Console.Error.WriteLine($"readmd: note — unknown theme '{themeStr}', using auto (see `readmd themes`).");
         dark = ResolveDark(themeStr);
     }
     var solidBackground = backgroundStr.Trim().ToLowerInvariant() is "solid" or "opaque" or "on";
@@ -326,16 +367,6 @@ root.SetAction(async (parse, ct) =>
         LineNumbers: config.LineNumbers ?? true,
         TabSize: Math.Clamp(config.TabSize ?? 4, 1, 16),
         SmartPunctuation: config.SmartPunctuation ?? false);
-    // Every named theme the viewer can switch to with `:theme <name>` (built-ins + config).
-    var namedThemes = new Dictionary<string, Readmd.Terminal.TerminalTheme>(StringComparer.OrdinalIgnoreCase)
-    {
-        ["dark"] = Readmd.Terminal.TerminalTheme.Dark,
-        ["light"] = Readmd.Terminal.TerminalTheme.Light,
-    };
-    if (config.Themes is not null)
-        foreach (var (name, ct2) in config.Themes)
-            namedThemes[name] = Readmd.Terminal.TerminalTheme.FromColorTheme(ct2);
-
     var viewerPrefs = new ViewerPrefs(
         ThemeAuto: themeStr.Equals("auto", StringComparison.OrdinalIgnoreCase) && customTheme is null,
         GraphicsAuto: graphicsAuto,
@@ -349,6 +380,7 @@ root.SetAction(async (parse, ct) =>
         Scrollbar: config.Scrollbar ?? true,
         ThemeName: customTheme is not null ? themeStr : null,
         NamedThemes: namedThemes,
+        ThemeCycle: themeCycle,
         StartLine: startLine,
         StartSearch: startSearch,
         FileSet: fileSet,
@@ -635,6 +667,7 @@ static async Task<int> RunTerminalAsync(string file, bool dark, DiagramTheme the
         Scrollbar = prefs.Scrollbar,
         ThemeName = prefs.ThemeName,
         NamedThemes = prefs.NamedThemes,
+        ThemeCycle = prefs.ThemeCycle,
         StartLine = prefs.StartLine,
         StartSearch = prefs.StartSearch,
         FileSet = prefs.FileSet,
@@ -711,5 +744,5 @@ internal sealed record LayoutSettings(int MaxWidth, bool LineNumbers, int TabSiz
 internal sealed record ViewerPrefs(
     bool ThemeAuto, bool GraphicsAuto, Readmd.Terminal.ColorMode Colors, bool Hyperlinks, int WheelLines, bool ConfirmExternalLinks,
     bool Offline, bool Watch, bool RememberPosition, bool Scrollbar, string? ThemeName,
-    IReadOnlyDictionary<string, Readmd.Terminal.TerminalTheme> NamedThemes, int? StartLine, string? StartSearch,
+    IReadOnlyDictionary<string, Readmd.Terminal.TerminalTheme> NamedThemes, IReadOnlyList<string> ThemeCycle, int? StartLine, string? StartSearch,
     IReadOnlyList<string> FileSet, bool StartWithPicker, string? DisplayName);

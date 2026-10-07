@@ -154,17 +154,16 @@ public sealed partial class TerminalViewer
 
     private void SetTheme(string name)
     {
-        switch (name.ToLowerInvariant())
+        name = name.Trim();
+        if (name.Length == 0) { ToggleTheme(); return; }
+        var theme = FindTheme(name);
+        if (theme is null)
         {
-            case "dark": ApplyTheme(TerminalTheme.Dark); return;
-            case "light": ApplyTheme(TerminalTheme.Light); return;
-            case "": ToggleTheme(); return;
-            default:
-                if (_options.Theme is not null && (_options.ThemeName?.Equals(name, StringComparison.OrdinalIgnoreCase) ?? name == "custom")) { ApplyTheme(_options.Theme); return; }
-                if (_options.NamedThemes is not null && _options.NamedThemes.TryGetValue(name, out var t)) { ApplyTheme(t); return; }
-                SetStatus("Unknown theme: " + name);
-                return;
+            var known = string.Join(", ", ThemeCycle.Take(12));
+            SetStatus($"Unknown theme: {name}  (themes: {known})", 4);
+            return;
         }
+        ApplyTheme(theme);
     }
 
     private void ApplyTheme(TerminalTheme theme)
@@ -174,15 +173,18 @@ public sealed partial class TerminalViewer
         {
             _theme = theme;
             _diagramTheme = _theme.IsDark ? DiagramTheme.Dark : DiagramTheme.Light;
+            // Diagram/image colors are theme-dependent: drop the rendered-bitmap caches so they
+            // re-encode for the new theme, but KEEP the source results so images stay on screen
+            // (the diagrams are re-requested for the new theme below and swap in when ready).
             ClearDiagramCaches();
             _forceHardClear = true;
             Relayout();
             foreach (var key in _pendingDiagrams.Keys) _diagramRequested.Remove(key);
         }
         KickoffDiagramRenders(forceDiagramRerender: true);
-        SetStatus("Theme: " + (_theme.IsDark ? "dark" : "light"), 1.5);
+        _ = CodeHighlighter.WarmUpAsync(_theme);
+        SetStatus("Theme: " + (_theme.Name.Length > 0 ? _theme.Name : (_theme.IsDark ? "dark" : "light")), 1.5);
     }
-
     private void SetGraphics(string mode)
     {
         var parsed = TerminalCapabilities.Parse(mode);

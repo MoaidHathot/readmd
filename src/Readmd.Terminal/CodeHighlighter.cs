@@ -21,8 +21,7 @@ public static class CodeHighlighter
 {
     private static readonly object Sync = new();
     private static RegistryOptions? _options;
-    private static Registry? _darkRegistry;
-    private static Registry? _lightRegistry;
+    private static readonly Dictionary<ThemeName, Registry> Registries = new();
     private static readonly Dictionary<string, IGrammar?> GrammarCache = new(StringComparer.OrdinalIgnoreCase);
 
     // Memoized results. Bounded: when it grows past MaxCached entries it is simply reset (the
@@ -57,10 +56,16 @@ public static class CodeHighlighter
     /// Builds the TextMate registry ahead of time on a background thread so the first highlight
     /// doesn't pay for it. Safe to call repeatedly; cheap once initialized.
     /// </summary>
-    public static Task WarmUpAsync(bool dark) => Task.Run(() => { try { RegistryFor(dark); } catch { /* best effort */ } });
+    public static Task WarmUpAsync(bool dark) => WarmUpAsync(dark ? ThemeName.DarkPlus : ThemeName.LightPlus);
+
+    /// <summary>Builds the registry for a specific TextMate theme ahead of time.</summary>
+    public static Task WarmUpAsync(ThemeName codeTheme) => Task.Run(() => { try { RegistryFor(codeTheme); } catch { /* best effort */ } });
+
+    /// <summary>Builds the registry for <paramref name="theme"/>'s code theme ahead of time.</summary>
+    public static Task WarmUpAsync(TerminalTheme theme) => WarmUpAsync(theme.EffectiveCodeTheme);
 
     private static string CacheKey(string code, string language, TerminalTheme theme) =>
-        NormalizeLanguage(language) + "\0" + (theme.IsDark ? "d" : "l") + "\0" + theme.Code.GetHashCode() + "\0" + Readmd.Core.Hashing.Sha256Hex(code)[..24];
+        NormalizeLanguage(language) + "\0" + theme.EffectiveCodeTheme + "\0" + theme.Code.GetHashCode() + "\0" + theme.Text.GetHashCode() + "\0" + Readmd.Core.Hashing.Sha256Hex(code)[..24];
 
     private static string[] SplitLines(string code) => code.Replace("\r\n", "\n").Split('\n');
 
@@ -118,9 +123,9 @@ public static class CodeHighlighter
 
     private static Rgb? ResolveColor(List<string> scopes, TerminalTheme theme)
     {
-        // Use the registry whose theme matches the terminal background so code stays legible:
-        // DarkPlus colors are designed for dark backgrounds and wash out on light, and vice versa.
-        var registry = RegistryFor(theme.IsDark);
+        // Use the registry for the theme's code palette (Dark+/Light+ by default so code stays
+        // legible on the terminal background; built-in themes pick a matching TextMate theme).
+        var registry = RegistryFor(theme.EffectiveCodeTheme);
         if (registry is null) return null;
 
         var themeManager = registry.GetTheme();
@@ -139,7 +144,7 @@ public static class CodeHighlighter
 
     private static IGrammar? GetGrammar(string language)
     {
-        var registry = RegistryFor(true) ?? RegistryFor(false); // grammars are theme-independent
+        var registry = RegistryFor(ThemeName.DarkPlus); // grammars are theme-independent
         if (_options is null || registry is null) return null;
         language = NormalizeLanguage(language);
         if (string.IsNullOrEmpty(language)) return null;
@@ -189,27 +194,24 @@ public static class CodeHighlighter
         };
     }
 
-    // Returns the registry for the requested theme, building it on first use. Only the theme actually
-    // used is constructed — a single-theme run never pays to build the other registry; the other is
-    // created lazily if the user toggles theme in the viewer.
+    // Returns the registry for the requested TextMate theme, building it on first use. Only the
+    // themes actually used are constructed — a single-theme run never pays to build another; more
+    // are created lazily if the user switches theme in the viewer.
     //
     // Grammars are theme-independent, so all grammar/scope lookups go through one shared RegistryOptions
     // (_options). Each Registry, however, must carry its own theme so GetTheme() resolves the right colors.
-    private static Registry? RegistryFor(bool dark)
+    private static Registry? RegistryFor(ThemeName codeTheme)
     {
-        var existing = dark ? _darkRegistry : _lightRegistry;
-        if (existing is not null) return existing;
         lock (Sync)
         {
-            existing = dark ? _darkRegistry : _lightRegistry;
-            if (existing is not null) return existing;
-            return Readmd.Core.Timing.Measure("textmate registry init", () =>
+            if (Registries.TryGetValue(codeTheme, out var existing)) return existing;
+            return Readmd.Core.Timing.Measure("textmate registry init " + codeTheme, () =>
             {
                 // Shared options for grammar lookup; its theme is irrelevant (grammars don't vary by theme).
-                _options ??= new RegistryOptions(dark ? ThemeName.DarkPlus : ThemeName.LightPlus);
-                return dark
-                    ? _darkRegistry ??= new Registry(new RegistryOptions(ThemeName.DarkPlus))
-                    : _lightRegistry ??= new Registry(new RegistryOptions(ThemeName.LightPlus));
+                _options ??= new RegistryOptions(codeTheme);
+                var registry = new Registry(new RegistryOptions(codeTheme));
+                Registries[codeTheme] = registry;
+                return registry;
             });
         }
     }

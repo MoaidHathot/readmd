@@ -266,6 +266,9 @@ public sealed class KeyMap
             "slides" or "presentation" => EditorAction.Slides,
             _ => EditorAction.None,
         };
+        // Any action's own name (as spelled in the enum / the JSON Schema) always works too.
+        if (action == EditorAction.None && Enum.TryParse<EditorAction>(n, ignoreCase: true, out var byName) && byName != EditorAction.None)
+            action = byName;
         return action != EditorAction.None;
     }
 

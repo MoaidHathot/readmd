@@ -1197,38 +1197,46 @@ public sealed partial class TerminalViewer
     }
 
     // ---------------- theme / appearance ----------------
-    private void ToggleTheme()
+    /// <summary>The ordered theme names '[' cycles through: the configured cycle, else every named theme.</summary>
+    private IReadOnlyList<string> ThemeCycle
     {
-        lock (_stateLock)
+        get
         {
-            // Cycle: custom (from config, if any) → dark → light → custom … so a configured palette is
-            // never lost by pressing '[' — it comes back around.
-            var custom = _options.Theme;
-            TerminalTheme next;
-            if (custom is not null && ReferenceEquals(_theme, custom)) next = TerminalTheme.Dark;
-            else if (ReferenceEquals(_theme, TerminalTheme.Dark)) next = TerminalTheme.Light;
-            else if (ReferenceEquals(_theme, TerminalTheme.Light)) next = custom ?? TerminalTheme.Dark;
-            else next = TerminalTheme.For(!_theme.IsDark);
-            _theme = next;
-            _diagramTheme = _theme.IsDark ? DiagramTheme.Dark : DiagramTheme.Light;
-            // Diagram/image colors are theme-dependent: drop the rendered-bitmap caches so they
-            // re-encode for the new theme, but KEEP the source results so images stay on screen
-            // (the diagrams will be re-requested for the new theme below).
-            ClearDiagramCaches();
-            _forceHardClear = true;
-            Relayout();
-
-            // Diagrams (mermaid/D2) are themed: re-request them in the background but KEEP the old
-            // image on screen until the new one arrives, so they don't blink out. Images aren't
-            // themed, so they just keep their existing result.
-            foreach (var key in _pendingDiagrams.Keys)
-                _diagramRequested.Remove(key);
+            if (_options.ThemeCycle is { Count: > 0 } cycle) return cycle;
+            if (_options.NamedThemes is { Count: > 0 } named) return named.Keys.ToList();
+            var list = new List<string> { "dark", "light" };
+            if (_options.Theme is not null) list.Insert(0, _options.Theme.Name.Length > 0 ? _options.Theme.Name : "custom");
+            return list;
         }
-        KickoffDiagramRenders(forceDiagramRerender: true);
-        var name = _options.Theme is not null && ReferenceEquals(_theme, _options.Theme) ? "custom" : (_theme.IsDark ? "dark" : "light");
-        SetStatus("Theme: " + name, 1.5);
     }
 
+    /// <summary>Resolves a theme name: configured/named themes first, then the built-ins.</summary>
+    private TerminalTheme? FindTheme(string name)
+    {
+        if (_options.Theme is not null && (_options.ThemeName?.Equals(name, StringComparison.OrdinalIgnoreCase) ?? false
+                                            || name.Equals("custom", StringComparison.OrdinalIgnoreCase)
+                                            || _options.Theme.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+            return _options.Theme;
+        if (_options.NamedThemes is not null && _options.NamedThemes.TryGetValue(name, out var t)) return t;
+        return BuiltInThemes.Find(name);
+    }
+
+    /// <summary>'[' — steps to the next theme in the cycle (the configured palette is never lost: it comes back around).</summary>
+    private void ToggleTheme(int step = 1)
+    {
+        var cycle = ThemeCycle;
+        int idx = -1;
+        for (int i = 0; i < cycle.Count; i++)
+            if (string.Equals(cycle[i], _theme.Name, StringComparison.OrdinalIgnoreCase)) { idx = i; break; }
+        for (int tries = 0; tries < cycle.Count; tries++)
+        {
+            idx = ((idx + step) % cycle.Count + cycle.Count) % cycle.Count;
+            var next = FindTheme(cycle[idx]);
+            if (next is not null && !ReferenceEquals(next, _theme)) { ApplyTheme(next); return; }
+        }
+        // Nothing else to cycle to (one theme configured): fall back to flipping dark/light.
+        ApplyTheme(TerminalTheme.For(!_theme.IsDark));
+    }
     private void ToggleSolidBackground()
     {
         _solidBackground = !_solidBackground;

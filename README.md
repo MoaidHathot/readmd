@@ -73,10 +73,21 @@ Options:
   -h, --help           Show help.
 
 Subcommands:
+  readmd doctor              Check this machine: terminal capabilities (live probe), colour
+                             depth, config files, diagram tools, PDF export, clipboard.
+  readmd themes              List the built-in and configured colour themes with swatches.
+  readmd config path         Show where configuration is read from.
+  readmd config init         Write a commented starter config (--project for .readmd.json).
+  readmd config validate     Report unknown keys, bad values, invalid colours and key chords.
+  readmd config schema       Print the config file's JSON Schema.
   readmd install-pdf         Provision the headless browser for high-quality PDF export.
   readmd completions <shell> Print a completion script (bash, zsh, fish, pwsh).
   readmd man                 Print a man page (troff).
 ```
+
+Something not rendering as expected? `readmd doctor` reports what the terminal
+answered (Sixel/kitty graphics, background colour, synchronized output), which
+diagram backend each kind will use and where every config and state file lives.
 
 ### Export & piping
 
@@ -129,7 +140,7 @@ Vim-style motions are supported throughout (with count prefixes: `5j`, `12gg`), 
 | `y` | Copy the top block (code without gutter, diagram source, table as text) | `Y` | Copy the whole document source |
 | `za` / `zc` / `zo` | Fold toggle / close / open the top section or `<details>` | `zM` / `zR` | Fold / unfold everything |
 | `s` | Diagram: toggle image ↔ source | `v` | Focus an image (zoom/pan, `n`/`p` next/prev, `o` app, `b` browser) |
-| `[` | Cycle theme (custom → dark → light) | `]` | Toggle solid / transparent background |
+| `[` | Cycle themes (`themeCycle` in config, else all) | `]` | Toggle solid / transparent background |
 | `o` | Open in browser | `m` | Mark mode (select + copy) |
 | `r` | Re-render | `:` | Command line (`:q`, `:e file`, `:123`, `:export out.pdf`, `:set width=100`, `:theme nord`, `:marks`, …) |
 | `T` | TOC sidebar (click an entry to jump) | `e` | Export to HTML/PDF next to the file |
@@ -161,6 +172,18 @@ The browser view uses the same vim-style motions, plus toggles to hide chrome:
 | `gg` / `G` | Top / bottom | `z` | Zen mode (hide all chrome) |
 | `Alt+←` / `Alt+→` | Back / forward | `[` / `e` | Toggle theme / export |
 
+## Themes
+
+Eleven themes ship built in — `dark`, `light`, `nord`, `dracula`, `gruvbox-dark`,
+`solarized-dark`, `solarized-light`, `catppuccin-mocha`, `one-dark`, `tokyo-night`,
+`monokai` — each paired with a matching TextMate theme for code blocks. `readmd themes`
+previews them with swatches; pick one with `--theme nord`, `"theme": "nord"` in the
+config, `:theme nord` in the viewer, or cycle with `[` (`themeCycle` chooses the order).
+`--theme auto` (the default) follows the terminal's reported background colour.
+
+Your own themes go under `"themes"` in the config: inherit from any built-in with
+`"base"` and override just the colours you want (and optionally `"codeTheme"`).
+
 ## Configuration
 
 readmd reads an optional JSON config so you don't have to repeat flags, and can
@@ -169,12 +192,17 @@ define custom color themes and remap keys. It looks for a user-level file —
 `%APPDATA%\readmd\config.json` on Windows — and a project-level `.readmd.json`
 found by walking up from the document's directory. Project settings override
 user settings; command-line flags override both. A missing or malformed file is
-ignored.
+ignored (with a warning). `readmd config init` writes a commented starter file,
+`readmd config validate` checks for typos and bad values, and the file's
+[JSON Schema](schema/readmd.schema.json) (`readmd config schema`) gives editors
+completion and validation via `"$schema"`.
 
 ```jsonc
 {
+  "$schema": "https://raw.githubusercontent.com/MoaidHathot/readmd/main/schema/readmd.schema.json",
   // Defaults used when the matching flag isn't passed:
-  "theme": "nord",            // "dark" | "light" | "auto" | a custom theme name below
+  "theme": "nord",            // "dark" | "light" | "auto" | a built-in or custom theme name
+  "themeCycle": ["dark", "light", "nord"],   // what [ cycles through (default: every theme)
   "background": "solid",      // "solid" | "terminal"
   "d2Path": "/usr/local/bin/d2",
   "krokiUrl": "https://kroki.io", // diagram server for kinds without a local tool (self-host for privacy)
@@ -195,13 +223,19 @@ ignored.
   "tabSize": 4,               // tab stop for tabs inside code blocks
   "smartPunctuation": false,  // “smart” quotes, – dashes and … ellipses
 
-  // Custom terminal color themes (any omitted color falls back to the dark/light base):
+  // Custom terminal color themes. Inherit from a built-in with "base" (else "dark" picks the
+  // dark/light default palette); any omitted color comes from the base. "codeTheme" selects the
+  // TextMate theme for code blocks (dark-plus, light-plus, dracula, monokai, one-dark, solarized-*, …).
   "themes": {
-    "nord": {
-      "dark": true,
-      "text": "#d8dee9", "background": "#2e3440", "backgroundElevated": "#3b4252",
-      "h1": "#88c0d0", "h2": "#81a1c1", "h3": "#8fbcbb",
-      "link": "#5e81ac", "accent": "#b48ead", "rule": "#434c5e"
+    "mine": {
+      "base": "nord",
+      "link": "#5e81ac", "accent": "#b48ead", "rule": "#434c5e",
+      "codeTheme": "one-dark"
+    },
+    "paper": {
+      "dark": false,
+      "text": "#222222", "background": "#fbf7ef", "backgroundElevated": "#f1ebdf",
+      "h1": "#7a3e9d", "h2": "#2a5db0", "h3": "#2e7d32", "codeBackground": "#f1ebdf"
     }
   },
 
@@ -222,7 +256,8 @@ Remappable actions: `quit`, `scrollDown`, `scrollUp`, `halfPageDown`, `halfPageU
 `help`, `nextHeading`, `prevHeading`, `nextBlock`, `prevBlock`, `nextCode`, `prevCode`,
 `nextImage`, `prevImage`, `yank`, `yankAll`, `foldToggle`, `foldClose`, `foldOpen`, `foldAll`,
 `unfoldAll`, `toggleDiagramSource`, `command`, `export`, `quickOpen`, `projectSearch`, `zoomIn`,
-`zoomOut`, `zoomReset`. (Mouse buttons and digit count prefixes are fixed.)
+`zoomOut`, `zoomReset`, `nextFile`, `prevFile`, `bookmark`, `goBookmark`, `toggleWatch`,
+`followTail`, `slides`. (Mouse buttons and digit count prefixes are fixed.)
 
 ### Shell completions & man page
 

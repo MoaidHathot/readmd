@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/MoaidHathot/readmd/main/schema/readmd.schema.json",
+  "title": "readmd configuration",
+  "description": "Settings for readmd, the terminal Markdown viewer. Lives in ~/.config/readmd/config.json (%APPDATA%\\readmd\\config.json on Windows) or a project-level .readmd.json. Every key is optional; command-line flags override these values.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string", "description": "Schema reference for editor validation; ignored by readmd." },
+    "theme": {
+      "type": "string",
+      "description": "Default theme: dark, light, auto (follows the terminal background), a built-in name (nord, dracula, gruvbox-dark, solarized-dark, solarized-light, catppuccin-mocha, one-dark, tokyo-night, monokai) or a custom theme defined under \"themes\".",
+      "examples": ["auto", "dark", "nord", "solarized-light"]
+    },
+    "themeCycle": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Theme names the [ key cycles through, in order. Default: every built-in and custom theme.",
+      "examples": [["dark", "light", "nord"]]
+    },
+    "background": { "type": "string", "enum": ["solid", "terminal"], "description": "solid paints the theme background (overrides terminal transparency); terminal shows the terminal's own background through. Toggle live with ]." },
+    "d2Path": { "type": "string", "description": "Path to the d2 executable (default: d2 on PATH)." },
+    "mermaidCliPath": { "type": "string", "description": "Path to mmdc (mermaid-cli); renders mermaid without a headless Chromium download." },
+    "graphvizPath": { "type": "string", "description": "Path to the Graphviz dot executable." },
+    "plantUmlPath": { "type": "string", "description": "Path to the plantuml launcher (needs Java)." },
+    "krokiUrl": { "type": "string", "format": "uri", "description": "Kroki server used for diagram kinds without a local tool (default https://kroki.io). Self-host for privacy: the diagram text is sent to this server.", "default": "https://kroki.io" },
+    "krokiFallback": { "type": "boolean", "description": "Use Kroki when a local diagram tool is missing. false = local tools only.", "default": true },
+    "graphics": { "type": "string", "enum": ["auto", "sixel", "kitty", "iterm2", "half-block", "none"], "description": "Inline image protocol. auto detects from the terminal; none shows diagram source / box art instead.", "default": "auto" },
+    "maxWidth": { "type": "integer", "minimum": 0, "description": "Maximum reading width in columns; content is centred when the terminal is wider. 0 = full width. Also the wrap width for --print.", "default": 0 },
+    "lineNumbers": { "type": "boolean", "description": "Show line numbers in code blocks (per-fence: nonums / showLineNumbers).", "default": true },
+    "tabSize": { "type": "integer", "minimum": 1, "maximum": 16, "description": "Tab stop used when expanding tabs inside code blocks.", "default": 4 },
+    "smartPunctuation": { "type": "boolean", "description": "Typographic replacements: smart quotes, dashes and ellipses.", "default": false },
+    "color": { "type": "string", "enum": ["auto", "always", "truecolor", "256", "16", "never"], "description": "Colour depth. auto detects (and honours NO_COLOR / FORCE_COLOR); always colours even piped --print output.", "default": "auto" },
+    "hyperlinks": { "type": "boolean", "description": "Emit OSC 8 hyperlinks so links are Ctrl/Cmd-clickable in supporting terminals.", "default": true },
+    "wheelLines": { "type": "integer", "minimum": 1, "maximum": 20, "description": "Lines scrolled per mouse-wheel notch.", "default": 3 },
+    "confirmExternalLinks": { "type": "boolean", "description": "Ask before opening an external link in the browser (Ctrl+click always skips the prompt).", "default": true },
+    "ascii": { "type": "boolean", "description": "Plain 7-bit ASCII instead of box-drawing characters and symbols (also --ascii / READMD_ASCII=1).", "default": false },
+    "ambiguousWide": { "type": "boolean", "description": "Treat East Asian Ambiguous characters as two cells wide, as CJK-locale terminals do.", "default": false },
+    "network": { "type": "boolean", "description": "Allow network access (remote images, Kroki, remote documents). false = offline (also --offline / READMD_OFFLINE=1).", "default": true },
+    "rememberPosition": { "type": "boolean", "description": "Remember the reading position, bookmarks and search history per file across sessions.", "default": true },
+    "scrollbar": { "type": "boolean", "description": "Show a scrollbar at the right edge.", "default": true },
+    "watch": { "type": "boolean", "description": "Live-reload when the file changes (W toggles at runtime; --no-watch disables).", "default": true },
+    "themes": {
+      "type": "object",
+      "description": "Custom colour themes, selectable by name via \"theme\", --theme or :theme. Unset colours come from \"base\" (a built-in theme) or the dark/light default.",
+      "additionalProperties": { "$ref": "#/definitions/colorTheme" }
+    },
+    "keys": {
+      "type": "object",
+      "description": "Key binding overrides: action name -> a chord or a list of chords. An override replaces every default binding of that action. Chords: single keys (\"x\", \"?\"), sequences (\"gg\", \"]]\"), modifiers (\"ctrl+q\", \"alt+f\", \"shift+tab\"), named keys (enter, esc, tab, space, up, down, left, right, home, end, pageup, pagedown, backspace, delete, f1-f12) or Vim-style (\"<C-d>\", \"<S-Tab>\").",
+      "propertyNames": {
+        "enum": [
+          "quit", "scrollDown", "scrollUp", "halfPageDown", "halfPageUp", "pageDown", "pageUp", "goTop", "goBottom",
+          "search", "searchNext", "searchPrev", "clearSearch", "toc", "tocSidebar", "back", "forward",
+          "followLink", "linkHints", "nextLink", "prevLink", "copyLinkUrl", "openInBrowser", "viewImage", "toggleSelectionMode", "rerender",
+          "toggleTheme", "toggleBackground", "help", "nextHeading", "prevHeading", "nextBlock", "prevBlock", "nextCode", "prevCode", "nextImage", "prevImage",
+          "yank", "yankAll", "foldToggle", "foldClose", "foldOpen", "foldAll", "unfoldAll", "toggleDiagramSource", "command", "export",
+          "quickOpen", "projectSearch", "zoomIn", "zoomOut", "zoomReset", "nextFile", "prevFile", "bookmark", "goBookmark", "toggleWatch", "followTail", "slides"
+        ]
+      },
+      "additionalProperties": {
+        "oneOf": [
+          { "type": "string" },
+          { "type": "array", "items": { "type": "string" } }
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "color": {
+      "type": "string",
+      "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$",
+      "description": "A colour as #rgb or #rrggbb."
+    },
+    "colorTheme": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dark": { "type": "boolean", "description": "Whether this is a dark theme (chooses the dark or light default palette for unset colours). Defaults to the base theme's." },
+        "base": { "type": "string", "description": "Built-in theme to inherit unset colours from: dark, light, nord, dracula, gruvbox-dark, solarized-dark, solarized-light, catppuccin-mocha, one-dark, tokyo-night, monokai." },
+        "codeTheme": { "type": "string", "description": "TextMate theme for code blocks, e.g. dark-plus, light-plus, dracula, monokai, one-dark, solarized-dark, solarized-light, atom-one-dark, kimbie-dark, tomorrow-night-blue, quiet-light. Defaults to the base theme's." },
+        "text": { "$ref": "#/definitions/color", "description": "Body text." },
+        "muted": { "$ref": "#/definitions/color", "description": "Secondary text: metadata, list gutters, status bar." },
+        "heading": { "$ref": "#/definitions/color", "description": "Headings H4 and below (H1-H3 have their own colours)." },
+        "link": { "$ref": "#/definitions/color", "description": "Links and link markers." },
+        "code": { "$ref": "#/definitions/color", "description": "Inline code and the plain-text fallback colour for code blocks." },
+        "quote": { "$ref": "#/definitions/color", "description": "Blockquote text and bar (defaults to muted)." },
+        "accent": { "$ref": "#/definitions/color", "description": "Emphasis accents, bullets, active indicators." },
+        "rule": { "$ref": "#/definitions/color", "description": "Horizontal rules, table borders, panel borders." },
+        "background": { "$ref": "#/definitions/color", "description": "Document background (painted when background = solid)." },
+        "backgroundElevated": { "$ref": "#/definitions/color", "description": "Panels, overlays and the status bar." },
+        "codeBackground": { "$ref": "#/definitions/color", "description": "Fill behind fenced code blocks." },
+        "codeBorder": { "$ref": "#/definitions/color", "description": "Left gutter bar of code blocks." },
+        "searchBackground": { "$ref": "#/definitions/color", "description": "Search-hit highlight (the active hit is derived from it)." },
+        "selectionBackground": { "$ref": "#/definitions/color", "description": "Selected rows in overlays and mark-mode selections (defaults to accent)." },
+        "h1": { "$ref": "#/definitions/color", "description": "H1 banners." },
+        "h2": { "$ref": "#/definitions/color", "description": "H2 headings." },
+        "h3": { "$ref": "#/definitions/color", "description": "H3 headings." }
+      }
+    }
+  }
+}

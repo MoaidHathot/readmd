@@ -51,6 +51,8 @@
 
   <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="\" Condition="Exists('..\..\README.md')" />
+    <!-- The config JSON Schema is served by `readmd config schema` and referenced from `config init`. -->
+    <EmbeddedResource Include="..\..\schema\readmd.schema.json" LogicalName="readmd.schema.json" />
   </ItemGroup>
 
   <!--

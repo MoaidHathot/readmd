@@ -1,8 +1,19 @@
+using TextMateSharp.Grammars;
+
 namespace Readmd.Terminal;
 
 /// <summary>Color palette for terminal rendering, in light and dark variants.</summary>
 public sealed class TerminalTheme
 {
+    /// <summary>Display name ("dark", "nord", a config theme name, …).</summary>
+    public string Name { get; init; } = "";
+
+    /// <summary>TextMate theme used for code highlighting; null = the default for the background (Dark+ / Light+).</summary>
+    public ThemeName? CodeTheme { get; init; }
+
+    /// <summary>The code theme that will actually be used.</summary>
+    public ThemeName EffectiveCodeTheme => CodeTheme ?? (IsDark ? ThemeName.DarkPlus : ThemeName.LightPlus);
+
     public required Rgb Text { get; init; }
     public required Rgb Muted { get; init; }
     public required Rgb Heading { get; init; }
@@ -41,6 +52,7 @@ public sealed class TerminalTheme
 
     public static TerminalTheme Dark { get; } = new()
     {
+        Name = "dark",
         IsDark = true,
         Text = Rgb.FromHex("#e6edf3"),
         Muted = Rgb.FromHex("#9da7b3"),
@@ -65,6 +77,7 @@ public sealed class TerminalTheme
 
     public static TerminalTheme Light { get; } = new()
     {
+        Name = "light",
         IsDark = false,
         Text = Rgb.FromHex("#1f2328"),
         Muted = Rgb.FromHex("#636c76"),
@@ -89,39 +102,76 @@ public sealed class TerminalTheme
 
     public static TerminalTheme For(bool dark) => dark ? Dark : Light;
 
+    /// <summary>Formats a colour as "#rrggbb".</summary>
+    public static string Hex(Rgb c) => $"#{c.R:x2}{c.G:x2}{c.B:x2}";
+
+    /// <summary>Returns a copy with a different display name.</summary>
+    public TerminalTheme WithName(string name) => new()
+    {
+        Name = name, CodeTheme = CodeTheme, IsDark = IsDark,
+        Text = Text, Muted = Muted, Heading = Heading, Link = Link, Code = Code, Quote = Quote, Accent = Accent, Rule = Rule,
+        SearchBg = SearchBg, SearchActiveBg = SearchActiveBg, Background = Background, BackgroundElevated = BackgroundElevated,
+        CodeBackground = CodeBackground, CodeBorder = CodeBorder, H1 = H1, H2 = H2, H3 = H3,
+        SelectionBackground = SelectionBackground, SelectionForeground = SelectionForeground,
+    };
+
+    /// <summary>
+    /// Parses a TextMate theme name as written in config: "dracula", "one-dark", "OneDark",
+    /// "solarized_light" … (case-insensitive, separators ignored). Null when unknown.
+    /// </summary>
+    public static ThemeName? ParseCodeTheme(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return null;
+        var key = new string(name.Where(char.IsLetterOrDigit).ToArray());
+        foreach (var value in Enum.GetValues<ThemeName>())
+            if (value.ToString().Equals(key, StringComparison.OrdinalIgnoreCase)) return value;
+        return key.ToLowerInvariant() switch
+        {
+            "dark" => ThemeName.DarkPlus, "light" => ThemeName.LightPlus,
+            "vsdark" or "visualstudiodark" => ThemeName.VisualStudioDark, "vslight" => ThemeName.VisualStudioLight,
+            _ => null,
+        };
+    }
+
     /// <summary>
     /// Builds a theme from a config <see cref="Readmd.Core.ColorTheme"/>, filling any unset color
-    /// from the built-in dark/light base (selected by <c>ColorTheme.Dark</c>).
+    /// from the base theme (<c>base</c> if it names a built-in, else dark/light by <c>dark</c>).
     /// </summary>
-    public static TerminalTheme FromColorTheme(Readmd.Core.ColorTheme ct)
+    public static TerminalTheme FromColorTheme(Readmd.Core.ColorTheme ct, string name = "custom")
     {
-        var b = ct.Dark ? Dark : Light;
+        TerminalTheme? b = null;
+        if (!string.IsNullOrWhiteSpace(ct.Base)) BuiltInThemes.All.TryGetValue(ct.Base, out b);
+        b ??= (ct.Dark ?? true) ? Dark : Light;
+        bool dark = ct.Dark ?? b.IsDark;
         Rgb Pick(string? hex, Rgb fallback)
         {
             if (string.IsNullOrWhiteSpace(hex)) return fallback;
             try { return Rgb.FromHex(hex); } catch { return fallback; }
         }
+        var searchBg = Pick(ct.SearchBackground, b.SearchBg);
         return new TerminalTheme
         {
-            IsDark = ct.Dark,
+            Name = name,
+            IsDark = dark,
+            CodeTheme = ParseCodeTheme(ct.CodeTheme) ?? b.CodeTheme,
             Text = Pick(ct.Text, b.Text),
             Muted = Pick(ct.Muted, b.Muted),
             Heading = Pick(ct.Heading, b.Heading),
             Link = Pick(ct.Link, b.Link),
             Code = Pick(ct.Code, b.Code),
-            Quote = Pick(ct.Muted, b.Quote),
+            Quote = Pick(ct.Quote, Pick(ct.Muted, b.Quote)),
             Accent = Pick(ct.Accent, b.Accent),
             Rule = Pick(ct.Rule, b.Rule),
-            SearchBg = b.SearchBg,
-            SearchActiveBg = b.SearchActiveBg,
+            SearchBg = searchBg,
+            SearchActiveBg = ct.SearchBackground is null ? b.SearchActiveBg : (dark ? searchBg.Lighten(0.2) : searchBg.Darken(0.15)),
             Background = Pick(ct.Background, b.Background),
             BackgroundElevated = Pick(ct.BackgroundElevated, b.BackgroundElevated),
-            CodeBackground = b.CodeBackground,
-            CodeBorder = b.CodeBorder,
+            CodeBackground = Pick(ct.CodeBackground, b.CodeBackground),
+            CodeBorder = Pick(ct.CodeBorder, b.CodeBorder),
             H1 = Pick(ct.H1, b.H1),
             H2 = Pick(ct.H2, b.H2),
             H3 = Pick(ct.H3, b.H3),
-            SelectionBackground = Pick(ct.Accent, b.SelectionBackground),
+            SelectionBackground = Pick(ct.SelectionBackground, Pick(ct.Accent, b.SelectionBackground)),
             SelectionForeground = b.SelectionForeground,
         };
     }

@@ -67,6 +67,9 @@ public sealed class TerminalViewerOptions
     /// <summary>All named themes available to `:theme <name>` (built-in + config).</summary>
     public IReadOnlyDictionary<string, TerminalTheme>? NamedThemes { get; init; }
 
+    /// <summary>Theme names in the order '[' cycles through them (default: every named theme).</summary>
+    public IReadOnlyList<string>? ThemeCycle { get; init; }
+
     /// <summary>Remember the reading position per file (and search history) across sessions.</summary>
     public bool RememberPosition { get; init; } = true;
 

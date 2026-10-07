@@ -400,6 +400,28 @@ public sealed class AnsiScreen : IDisposable
             SetConsoleMode(_inputHandle, _savedInputMode);
     }
 
+    /// <summary>
+    /// Puts stdin into raw (unbuffered, no-echo) mode and enables VT processing on stdout without
+    /// touching the screen — for one-shot terminal interrogation outside the viewer
+    /// (<see cref="TerminalProbe.ProbeBlocking"/>). Pair with <see cref="RestoreRawInput"/>.
+    /// </summary>
+    internal static void EnterRawInput()
+    {
+        EnableVirtualTerminal();
+        EnterRawModeUnix();
+    }
+
+    /// <summary>Undoes <see cref="EnterRawInput"/> on every platform.</summary>
+    internal static void RestoreRawInput()
+    {
+        RestoreInputMode();
+        RestoreRawModeUnix();
+    }
+
+    /// <summary>Wraps a sequence for tmux passthrough when running under tmux (static form of <see cref="Passthrough"/>).</summary>
+    internal static string PassthroughIfTmux(string sequence) =>
+        string.IsNullOrEmpty(Environment.GetEnvironmentVariable("TMUX")) ? sequence : "\ePtmux;" + sequence.Replace("\e", "\e\e") + "\e\\";
+
     // ---------- Unix raw mode (termios) ----------
     // Putting the terminal in raw mode lets KeyReader read individual bytes (and mouse escape
     // sequences) instead of line-buffered input. ISIG is kept so Ctrl+C still raises SIGINT.

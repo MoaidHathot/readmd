@@ -11,8 +11,14 @@ namespace Readmd.Core;
 /// </summary>
 public sealed class ReadmdConfig
 {
-    /// <summary>Default theme when <c>--theme</c> isn't passed: "dark", "light", "auto", or a custom theme name.</summary>
+    /// <summary>Optional JSON Schema reference (ignored; lets editors validate the file).</summary>
+    [JsonPropertyName("$schema")] public string? Schema { get; set; }
+
+    /// <summary>Default theme when <c>--theme</c> isn't passed: "dark", "light", "auto", a built-in name ("nord", …) or a custom theme name.</summary>
     [JsonPropertyName("theme")] public string? Theme { get; set; }
+
+    /// <summary>Theme names the <c>[</c> key cycles through, in order (default: all built-in and custom themes).</summary>
+    [JsonPropertyName("themeCycle")] public List<string>? ThemeCycle { get; set; }
 
     /// <summary>Default background when <c>--background</c> isn't passed: "solid"/"terminal".</summary>
     [JsonPropertyName("background")] public string? Background { get; set; }
@@ -109,7 +115,9 @@ public sealed class ReadmdConfig
     {
         var merged = new ReadmdConfig
         {
+            Schema = overrides.Schema ?? Schema,
             Theme = overrides.Theme ?? Theme,
+            ThemeCycle = overrides.ThemeCycle ?? ThemeCycle,
             Background = overrides.Background ?? Background,
             D2Path = overrides.D2Path ?? D2Path,
             MermaidCliPath = overrides.MermaidCliPath ?? MermaidCliPath,
@@ -193,25 +201,47 @@ public sealed class KeyBindingsConverter : JsonConverter<Dictionary<string, IRea
 }
 
 /// <summary>
-/// A custom color palette defined in config. Any field left null falls back to the built-in
-/// dark/light value (selected by <see cref="Dark"/>), so a theme can override just a few colors.
-/// Colors are hex strings like "#rrggbb".
+/// A custom color palette defined in config. Any field left null falls back to the base theme's
+/// value (<see cref="Base"/>, else the built-in dark/light palette selected by <see cref="Dark"/>),
+/// so a theme can override just a few colors. Colors are hex strings like "#rrggbb".
 /// </summary>
 public sealed class ColorTheme
 {
-    /// <summary>Whether this theme is a dark theme (selects the base palette to fill gaps).</summary>
-    [JsonPropertyName("dark")] public bool Dark { get; set; } = true;
+    /// <summary>Whether this theme is a dark theme (selects the dark/light base palette to fill gaps). Defaults to the base theme's, else dark.</summary>
+    [JsonPropertyName("dark")] public bool? Dark { get; set; }
+
+    /// <summary>A built-in theme to inherit unset colors from (e.g. "nord", "solarized-light").</summary>
+    [JsonPropertyName("base")] public string? Base { get; set; }
+
+    /// <summary>TextMate theme for code highlighting (e.g. "dracula", "one-dark", "solarized-light"); defaults to the base theme's.</summary>
+    [JsonPropertyName("codeTheme")] public string? CodeTheme { get; set; }
 
     [JsonPropertyName("text")] public string? Text { get; set; }
     [JsonPropertyName("muted")] public string? Muted { get; set; }
     [JsonPropertyName("heading")] public string? Heading { get; set; }
     [JsonPropertyName("link")] public string? Link { get; set; }
     [JsonPropertyName("code")] public string? Code { get; set; }
+    [JsonPropertyName("quote")] public string? Quote { get; set; }
     [JsonPropertyName("accent")] public string? Accent { get; set; }
     [JsonPropertyName("rule")] public string? Rule { get; set; }
     [JsonPropertyName("background")] public string? Background { get; set; }
     [JsonPropertyName("backgroundElevated")] public string? BackgroundElevated { get; set; }
+    [JsonPropertyName("codeBackground")] public string? CodeBackground { get; set; }
+    [JsonPropertyName("codeBorder")] public string? CodeBorder { get; set; }
+    [JsonPropertyName("searchBackground")] public string? SearchBackground { get; set; }
+    [JsonPropertyName("selectionBackground")] public string? SelectionBackground { get; set; }
     [JsonPropertyName("h1")] public string? H1 { get; set; }
     [JsonPropertyName("h2")] public string? H2 { get; set; }
     [JsonPropertyName("h3")] public string? H3 { get; set; }
+
+    /// <summary>Every color-valued property (name → value), for validation and docs.</summary>
+    public IEnumerable<(string Name, string? Value)> Colors()
+    {
+        yield return ("text", Text); yield return ("muted", Muted); yield return ("heading", Heading); yield return ("link", Link);
+        yield return ("code", Code); yield return ("quote", Quote); yield return ("accent", Accent); yield return ("rule", Rule);
+        yield return ("background", Background); yield return ("backgroundElevated", BackgroundElevated);
+        yield return ("codeBackground", CodeBackground); yield return ("codeBorder", CodeBorder);
+        yield return ("searchBackground", SearchBackground); yield return ("selectionBackground", SelectionBackground);
+        yield return ("h1", H1); yield return ("h2", H2); yield return ("h3", H3);
+    }
 }

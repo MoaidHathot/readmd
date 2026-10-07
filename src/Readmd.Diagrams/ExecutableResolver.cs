@@ -10,7 +10,7 @@ namespace Readmd.Diagrams;
 /// those can't be started directly with <c>UseShellExecute=false</c>. Such shims are wrapped with
 /// <c>cmd /c</c> (for <c>.cmd</c>/<c>.bat</c>) or <c>pwsh -File</c> (for <c>.ps1</c>).
 /// </summary>
-internal static class ExecutableResolver
+public static class ExecutableResolver
 {
     /// <summary>
     /// Builds a <see cref="ProcessStartInfo"/> that launches <paramref name="command"/> with the
