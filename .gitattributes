@@ -1,0 +1,17 @@
+# Keep every text file LF in the repository and the working tree, regardless of core.autocrlf.
+* text=auto eol=lf
+
+# Windows scripts that cmd.exe reads must stay CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.pdf binary

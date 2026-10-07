@@ -32,7 +32,7 @@ var bestEffortOption = new Option<bool>("--best-effort")
 };
 var themeOption = new Option<string?>("--theme")
 {
-    Description = "Color theme: dark, light, auto, or a custom theme name from your config (default: auto).",
+    Description = "Color theme: dark, light, auto, a built-in name (see `readmd themes`: nord, dracula, …) or a custom theme from your config (default: auto).",
 };
 var backgroundOption = new Option<string?>("--background", ["--bg"])
 {

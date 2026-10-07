@@ -301,11 +301,11 @@ readmd man > ~/.local/share/man/man1/readmd.1
 
 | Project | Responsibility |
 | --- | --- |
-| **Readmd.Core** | Markdig pipeline, `[[_TOC_]]` extension, TOC/diagram extraction, file watching, link resolution, diagram cache contracts. |
+| **Readmd.Core** | Markdig pipeline, `[[_TOC_]]` extension, TOC/diagram extraction, file watching, link resolution, config + state stores, wiki index (quick-open / project search), remote sources, slide deck splitting, diagram cache contracts. |
 | **Readmd.Diagrams** | Renders mermaid (local `mmdc`, else headless Chromium via Playwright with mermaid bundled), D2, Graphviz (`dot`), and PlantUML — each external tool → SVG → PNG via SkiaSharp — cached by content hash. Also drives **PDF export** (Playwright + a system Node.js, Chromium provisioned on demand). |
 | **Readmd.Web** | Kestrel server: HTML rendering, server-rendered D2 SVG, SSE live-reload with `idiomorph`, multi-file SPA navigation, embedded assets. |
-| **Readmd.Terminal** | Hand-rolled TUI: ANSI/truecolor renderer, Markdown→styled-line layout, TextMate highlighting, Sixel image output, search/TOC/links/history. |
-| **Readmd.Cli** | `System.CommandLine` entry point; packaged as the `readmd` .NET tool. |
+| **Readmd.Terminal** | Hand-rolled TUI: diff-repainting ANSI renderer (truecolor/256/16), Markdown→styled-line layout incl. an HTML subset, TextMate highlighting, Sixel/kitty/iTerm2/half-block images, terminal capability probing, search/TOC/links/folds/history, palettes, slides, 11 built-in themes, config validation. |
+| **Readmd.Cli** | `System.CommandLine` entry point (`doctor`, `themes`, `config`, `completions`, `man`, `install-pdf`); packaged as the `readmd` .NET tool and as standalone single-file binaries. |
 
 The Markdig pipeline and diagram cache are shared by both front-ends, so the terminal and browser views stay consistent and diagrams are only rendered once per content hash.
 
