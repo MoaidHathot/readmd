@@ -1,0 +1,29 @@
+{
+  "version": "{{VERSION}}",
+  "description": "Terminal-first Markdown viewer with diagrams, live reload and a browser mode",
+  "homepage": "https://github.com/MoaidHathot/readmd",
+  "license": "MIT",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/MoaidHathot/readmd/releases/download/v{{VERSION}}/readmd-{{VERSION}}-win-x64.zip",
+      "hash": "{{SHA_WIN_X64}}"
+    },
+    "arm64": {
+      "url": "https://github.com/MoaidHathot/readmd/releases/download/v{{VERSION}}/readmd-{{VERSION}}-win-arm64.zip",
+      "hash": "{{SHA_WIN_ARM64}}"
+    }
+  },
+  "bin": "readmd.exe",
+  "checkver": {
+    "github": "https://github.com/MoaidHathot/readmd"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": { "url": "https://github.com/MoaidHathot/readmd/releases/download/v$version/readmd-$version-win-x64.zip" },
+      "arm64": { "url": "https://github.com/MoaidHathot/readmd/releases/download/v$version/readmd-$version-win-arm64.zip" }
+    },
+    "hash": {
+      "url": "https://github.com/MoaidHathot/readmd/releases/download/v$version/SHA256SUMS.txt"
+    }
+  }
+}

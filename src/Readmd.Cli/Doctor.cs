@@ -161,8 +161,10 @@ internal static class Doctor
 
         // ---------------- paths ----------------
         o.AppendLine("Install");
-        var location = typeof(Doctor).Assembly.Location;
-        if (string.IsNullOrEmpty(location)) location = Environment.ProcessPath ?? AppContext.BaseDirectory;   // single-file publish
+        // Framework-dependent: the dll next to AppContext.BaseDirectory (ProcessPath would be dotnet.exe);
+        // single-file publish: the executable itself.
+        var dll = Path.Combine(AppContext.BaseDirectory, "readmd.dll");
+        var location = File.Exists(dll) ? dll : Environment.ProcessPath ?? AppContext.BaseDirectory;
         o.AppendLine($"  executable     {location}");
         o.AppendLine($"  shell help     `readmd completions <bash|zsh|fish|pwsh>`{Dot}`readmd man`{Dot}`readmd themes`{Dot}`readmd config path`");
 

@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: MoaidHathot.readmd
+PackageVersion: {{VERSION}}
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: readmd.exe
+    PortableCommandAlias: readmd
+Commands:
+  - readmd
+ReleaseDate: {{DATE}}
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/MoaidHathot/readmd/releases/download/v{{VERSION}}/readmd-{{VERSION}}-win-x64.zip
+    InstallerSha256: {{SHA_WIN_X64_UPPER}}
+  - Architecture: arm64
+    InstallerUrl: https://github.com/MoaidHathot/readmd/releases/download/v{{VERSION}}/readmd-{{VERSION}}-win-arm64.zip
+    InstallerSha256: {{SHA_WIN_ARM64_UPPER}}
+ManifestType: installer
+ManifestVersion: 1.6.0

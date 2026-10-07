@@ -1,0 +1,162 @@
+name: Release
+
+# Builds self-contained single-file binaries for every supported platform when a version tag is
+# pushed (v1.2.3), packs the .NET tool, renders the Homebrew formula / Scoop manifest / winget
+# manifests with the real SHA-256 hashes, and publishes everything as a GitHub release.
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to release (e.g. v0.9.0)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_NOLOGO: 1
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+
+jobs:
+  publish:
+    name: Publish ${{ matrix.rid }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { rid: win-x64,     os: windows-latest, archive: zip }
+          - { rid: win-arm64,   os: windows-latest, archive: zip }
+          - { rid: linux-x64,   os: ubuntu-latest,  archive: tar.gz }
+          - { rid: linux-arm64, os: ubuntu-latest,  archive: tar.gz }
+          - { rid: osx-x64,     os: macos-latest,   archive: tar.gz }
+          - { rid: osx-arm64,   os: macos-latest,   archive: tar.gz }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Version from tag
+        id: ver
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish (self-contained, single file)
+        shell: bash
+        run: |
+          dotnet publish src/Readmd.Cli/Readmd.Cli.csproj -c Release -r ${{ matrix.rid }} --self-contained \
+            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true \
+            -p:DebugType=none -p:Version=${{ steps.ver.outputs.version }} -p:InformationalVersion=${{ steps.ver.outputs.version }} \
+            -o artifacts/publish/${{ matrix.rid }}
+
+      - name: Archive
+        shell: bash
+        run: |
+          NAME="readmd-${{ steps.ver.outputs.version }}-${{ matrix.rid }}"
+          mkdir -p artifacts/dist
+          cp LICENSE* README.md artifacts/publish/${{ matrix.rid }}/ 2>/dev/null || true
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            (cd artifacts/publish/${{ matrix.rid }} && 7z a -tzip -mx=9 "../../dist/$NAME.zip" . > /dev/null)
+          else
+            tar -C artifacts/publish/${{ matrix.rid }} -czf "artifacts/dist/$NAME.tar.gz" .
+          fi
+          ls -la artifacts/dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.rid }}
+          path: artifacts/dist/*
+
+  pack:
+    name: Pack .NET tool
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Version from tag
+        id: ver
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+      - name: Pack
+        run: dotnet pack src/Readmd.Cli/Readmd.Cli.csproj -c Release -p:Version=${{ steps.ver.outputs.version }} -p:InformationalVersion=${{ steps.ver.outputs.version }} -o artifacts/dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-nupkg
+          path: artifacts/dist/*.nupkg
+
+  release:
+    name: GitHub release
+    runs-on: ubuntu-latest
+    needs: [publish, pack]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: artifacts/dist
+
+      - name: Version from tag
+        id: ver
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Checksums
+        shell: bash
+        working-directory: artifacts/dist
+        run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      - name: Render Homebrew / Scoop / winget manifests
+        shell: pwsh
+        run: ./packaging/render.ps1 -Version '${{ steps.ver.outputs.version }}' -DistDir artifacts/dist -OutDir artifacts/dist/manifests
+
+      - name: Release notes
+        shell: bash
+        run: |
+          {
+            echo "## readmd ${{ steps.ver.outputs.version }}"
+            echo
+            echo "Install with the .NET SDK: \`dnx readmd README.md\` or \`dotnet tool install -g readmd\`."
+            echo "Standalone binaries below need no .NET runtime; unpack and run \`readmd\`."
+            echo
+            echo "- **Scoop:** \`scoop install https://github.com/${{ github.repository }}/releases/download/${{ steps.ver.outputs.tag }}/readmd.json\`"
+            echo "- **Homebrew:** \`brew install --formula https://github.com/${{ github.repository }}/releases/download/${{ steps.ver.outputs.tag }}/readmd.rb\`"
+            echo "- **winget:** manifests under \`winget/\` (submit to microsoft/winget-pkgs, or \`winget install --manifest winget/\`)"
+            echo
+            echo "SHA-256 checksums are in \`SHA256SUMS.txt\`."
+          } > artifacts/notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: readmd ${{ steps.ver.outputs.version }}
+          body_path: artifacts/notes.md
+          files: |
+            artifacts/dist/*.zip
+            artifacts/dist/*.tar.gz
+            artifacts/dist/*.nupkg
+            artifacts/dist/SHA256SUMS.txt
+            artifacts/dist/manifests/readmd.rb
+            artifacts/dist/manifests/readmd.json
+            artifacts/dist/manifests/winget.zip

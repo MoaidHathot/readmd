@@ -7,7 +7,20 @@ dnx readmd report.md                 # view in the terminal (TUI)
 dnx readmd report.md --browser       # view in the browser (full fidelity)
 ```
 
-> Requires the **.NET 10 SDK** (for `dnx`). `d2` on your `PATH` is needed for D2 diagrams, and a local `mmdc` (mermaid-cli) for mermaid. **High-quality PDF export** additionally needs **Node.js** and a one-time headless-browser download (`readmd install-pdf`, or accept the prompt in the browser); everything else works with no extra setup.
+> Requires the **.NET 10 SDK** (for `dnx`). `d2` on your `PATH` is needed for D2 diagrams, and a local `mmdc` (mermaid-cli) for mermaid. **High-quality PDF export** additionally needs **Node.js** and a one-time headless-browser download (`readmd install-pdf`, or accept the prompt in the browser); everything else works with no extra setup. Run `readmd doctor` to see what your terminal and machine support.
+
+## Install
+
+| How | Command |
+| --- | --- |
+| Run once, no install (.NET 10 SDK) | `dnx readmd README.md` |
+| .NET global tool | `dotnet tool install -g readmd` |
+| Standalone binary (no .NET needed) | Download `readmd-<version>-<os>-<arch>.zip`/`.tar.gz` from the [releases](https://github.com/MoaidHathot/readmd/releases) and put `readmd` on your `PATH` |
+| Scoop (Windows) | `scoop install https://github.com/MoaidHathot/readmd/releases/latest/download/readmd.json` |
+| Homebrew (macOS / Linux) | `brew install --formula https://github.com/MoaidHathot/readmd/releases/latest/download/readmd.rb` |
+| winget (Windows) | manifests are attached to each release (`winget.zip`) for `winget install --manifest` |
+
+Standalone builds are self-contained single-file executables for Windows, Linux and macOS (x64 and arm64), built by the release workflow from a `v*` tag; `SHA256SUMS.txt` lists their checksums. Keep the `.playwright` folder next to the executable if you want PDF export.
 
 ## Features
 

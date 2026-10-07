@@ -1,0 +1,46 @@
+# Homebrew formula for readmd (rendered by packaging/render.ps1 at release time).
+# Install straight from a release:
+#   brew install --formula https://github.com/MoaidHathot/readmd/releases/download/v{{VERSION}}/readmd.rb
+class Readmd < Formula
+  desc "Terminal-first Markdown viewer with diagrams, live reload and a browser mode"
+  homepage "https://github.com/MoaidHathot/readmd"
+  version "{{VERSION}}"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/MoaidHathot/readmd/releases/download/v{{VERSION}}/readmd-{{VERSION}}-osx-arm64.tar.gz"
+      sha256 "{{SHA_OSX_ARM64}}"
+    end
+    on_intel do
+      url "https://github.com/MoaidHathot/readmd/releases/download/v{{VERSION}}/readmd-{{VERSION}}-osx-x64.tar.gz"
+      sha256 "{{SHA_OSX_X64}}"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "https://github.com/MoaidHathot/readmd/releases/download/v{{VERSION}}/readmd-{{VERSION}}-linux-arm64.tar.gz"
+      sha256 "{{SHA_LINUX_ARM64}}"
+    end
+    on_intel do
+      url "https://github.com/MoaidHathot/readmd/releases/download/v{{VERSION}}/readmd-{{VERSION}}-linux-x64.tar.gz"
+      sha256 "{{SHA_LINUX_X64}}"
+    end
+  end
+
+  def install
+    # The archive holds the single-file executable plus Playwright's JS driver folder
+    # (.playwright/, used for PDF export); keep them together under libexec.
+    libexec.install Dir["*"], Dir[".playwright"]
+    bin.install_symlink libexec/"readmd"
+    generate_completions_from_executable(libexec/"readmd", "completions", shells: [:bash, :zsh, :fish])
+    (man1/"readmd.1").write Utils.safe_popen_read(libexec/"readmd", "man")
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/readmd --version")
+    (testpath/"t.md").write("# Hello\n\nworld\n")
+    assert_match "Hello", shell_output("#{bin}/readmd #{testpath}/t.md --print")
+  end
+end

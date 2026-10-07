@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: MoaidHathot.readmd
+PackageVersion: {{VERSION}}
+PackageLocale: en-US
+Publisher: Moaid Hathot
+PublisherUrl: https://github.com/MoaidHathot
+PublisherSupportUrl: https://github.com/MoaidHathot/readmd/issues
+PackageName: readmd
+PackageUrl: https://github.com/MoaidHathot/readmd
+License: MIT
+LicenseUrl: https://github.com/MoaidHathot/readmd/blob/main/LICENSE
+ShortDescription: Terminal-first Markdown viewer with diagrams, live reload and a browser mode
+Description: |-
+  readmd renders Markdown right in your terminal: headings, tables, GitHub alerts, task lists,
+  syntax-highlighted code, math, and mermaid / D2 / Graphviz / PlantUML diagrams as inline images
+  (Sixel, kitty or iTerm2 graphics). It live-reloads as you edit, searches across a whole folder of
+  documents, follows wiki links with history, and can export to HTML or PDF or open the same document
+  in your browser.
+Moniker: readmd
+Tags:
+  - markdown
+  - viewer
+  - terminal
+  - tui
+  - mermaid
+  - d2
+  - cli
+ReleaseNotesUrl: https://github.com/MoaidHathot/readmd/releases/tag/v{{VERSION}}
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0
