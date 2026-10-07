@@ -517,6 +517,13 @@ public sealed partial class TerminalViewer
         }
     }
 
+    /// <summary>Headless: simulates a terminal resize followed by the debounced reflow.</summary>
+    internal void Resize(int width, int height)
+    {
+        _screen.SetCaptureSize(width, height);
+        ReflowForResize();
+    }
+
     /// <summary>Headless: fires a pending chord prefix (a bare "[" or "g") as the render loop would after the timeout.</summary>
     internal void FlushPendingChord()
     {

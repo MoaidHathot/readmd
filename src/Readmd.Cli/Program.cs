@@ -585,12 +585,14 @@ static async Task<int> RunPrintAsync(string full, bool fromStdin, bool dark, boo
         // Presentation handout: every slide fully revealed, separated by a numbered rule, notes after.
         var deck = SlideDeck.Split(markdown);
         var sb = new System.Text.StringBuilder();
+        // The front matter must stay at the very top to render as the document header.
+        if (deck.FrontMatter.Length > 0) sb.Append(deck.FrontMatter).Append("\n\n");
         for (int i = 0; i < deck.Count; i++)
         {
             var slide = deck[i];
             string rule = Readmd.Terminal.Glyphs.Ascii ? "----" : "────";
             sb.Append(rule).Append($" Slide {i + 1}/{deck.Count}: {slide.Title} ").Append(rule).Append("\n\n");
-            sb.Append(slide.Markdown.TrimEnd('\n')).Append("\n\n");
+            sb.Append(deck.BodyOf(slide).TrimEnd('\n')).Append("\n\n");
             if (slide.Notes is not null) sb.Append("> **Notes:** ").Append(slide.Notes.Replace("\n", "\n> ")).Append("\n\n");
         }
         markdown = sb.ToString();

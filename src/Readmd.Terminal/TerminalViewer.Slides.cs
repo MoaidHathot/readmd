@@ -211,8 +211,9 @@ public sealed partial class TerminalViewer
         int cardW = Math.Min(_screen.Width - 4, Math.Max(40, _screen.Width * 3 / 4));
         var text = slide?.Notes ?? "(no notes for this slide — add <!-- notes … --> or a ??? line)";
         var wrapped = WrapNotes(text, cardW - 4);
-        int bodyRows = Math.Clamp(wrapped.Count, 1, Math.Max(1, _screen.Height / 2 - 4));
-        int cardH = bodyRows + 4;
+        int bodyRows = Math.Clamp(wrapped.Count, 1, Math.Max(1, _screen.Height / 2 - 6));
+        // Card chrome: border, title, divider, body, divider, footer, border → body + 6 rows.
+        int cardH = bodyRows + 6;
         int boxTop = Math.Max(0, _screen.Height - 1 - cardH - 1);
         int boxLeft = Math.Max(0, (_screen.Width - cardW) / 2);
         var (cTop, cLeft, cW, cH) = DrawCard(p, boxTop, boxLeft, cardW, cardH);

@@ -157,15 +157,36 @@ public sealed partial class TerminalViewer
 
     // ---------------- quick-open (Ctrl+P) ----------------
     private IReadOnlyList<WikiIndex.TreeEntry>? _wikiFiles;
+    private DateTime _wikiFilesAt;
+    private string? _wikiFilesRoot;
+
+    /// <summary>The Markdown files under the root, re-enumerated when the cached list is stale or for another root.</summary>
+    private IReadOnlyList<WikiIndex.TreeEntry> WikiFiles()
+    {
+        var root = _resolver.Root;
+        if (_wikiFiles is null || _wikiFilesRoot != root || DateTime.UtcNow - _wikiFilesAt > TimeSpan.FromSeconds(5))
+        {
+            // Titles would mean opening every file; the picker shows paths (titles come with search hits).
+            _wikiFiles = WikiIndex.ListFiles(root, withTitles: false);
+            _wikiFilesAt = DateTime.UtcNow;
+            _wikiFilesRoot = root;
+        }
+        return _wikiFiles;
+    }
 
     private void OpenQuickOpen()
     {
         var root = _resolver.Root;
         var recent = _state?.Recent ?? [];
-        // File titles are read lazily per entry only for the shown page? Titles are cheap (first 40
-        // lines) but a 2000-file tree would take a moment: list without titles first, fill in later.
-        _wikiFiles ??= WikiIndex.ListFiles(root, withTitles: false);
-        var items = _wikiFiles.Select(f => new PaletteItem(f.Relative, RecentMark(recent, f.Path), f.Path, 0, f)).ToList();
+        var files = WikiFiles();
+        var byEntry = new Dictionary<WikiIndex.TreeEntry, PaletteItem>(ReferenceEqualityComparer.Instance);
+        var items = new List<PaletteItem>(files.Count);
+        foreach (var f in files)
+        {
+            var item = new PaletteItem(f.Relative, RecentMark(recent, f.Path), f.Path, 0, f);
+            items.Add(item);
+            byEntry[f] = item;
+        }
         if (items.Count == 0) { SetStatus("No other Markdown files under " + root); return; }
         OpenPalette("Open file", "type to filter   ↑↓ move   enter open   esc close", items,
             q =>
@@ -176,8 +197,8 @@ public sealed partial class TerminalViewer
                     var set = new HashSet<string>(recent, StringComparer.OrdinalIgnoreCase);
                     return items.OrderBy(i => set.Contains(i.Path!) ? recent.ToList().FindIndex(r => string.Equals(r, i.Path, StringComparison.OrdinalIgnoreCase)) : int.MaxValue).ThenBy(i => i.Label, StringComparer.OrdinalIgnoreCase).Take(200).ToList();
                 }
-                var filtered = WikiIndex.FuzzyFilter(_wikiFiles, q);
-                return filtered.Select(f => items.First(i => ReferenceEquals(i.Tag, f))).ToList();
+                var filtered = WikiIndex.FuzzyFilter(files, q);
+                return filtered.Select(f => byEntry[f]).ToList();
             },
             item => { if (item.Path is not null) NavigateTo(item.Path, null); });
     }
@@ -283,8 +304,7 @@ public sealed partial class TerminalViewer
     /// <summary>Opens the directory picker for the current file's root (used by `readmd .`).</summary>
     internal void ShowDirectoryPicker()
     {
-        _wikiFiles ??= WikiIndex.ListFiles(_resolver.Root, withTitles: false);
-        var files = _wikiFiles.Select(f => f.Path).OrderByDescending(f => { try { return File.GetLastWriteTimeUtc(f); } catch { return DateTime.MinValue; } }).ToList();
+        var files = WikiFiles().Select(f => f.Path).OrderByDescending(f => { try { return File.GetLastWriteTimeUtc(f); } catch { return DateTime.MinValue; } }).ToList();
         if (files.Count == 0) { SetStatus("No Markdown files under " + _resolver.Root); return; }
         OpenFilePicker(files, Path.GetFileName(_resolver.Root.TrimEnd(Path.DirectorySeparatorChar)) is { Length: > 0 } n ? n : _resolver.Root);
     }

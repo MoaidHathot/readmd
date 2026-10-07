@@ -54,16 +54,26 @@ public static class RemoteSource
             return new Uri($"https://raw.githubusercontent.com/{owner}/{repo}/{gitRef}/{path}");
         }
         var uri = new Uri(arg);
+        // Forge page URLs carry view-state (?plain=1, #L10) that has no meaning for the raw file.
+        var page = uri.Host.EndsWith("github.com", StringComparison.OrdinalIgnoreCase) || uri.Host.EndsWith("gitlab.com", StringComparison.OrdinalIgnoreCase)
+            ? uri.GetLeftPart(UriPartial.Path) : uri.AbsoluteUri;
         // https://github.com/owner/repo/blob/ref/path.md → raw
-        var gh = Regex.Match(uri.AbsoluteUri, @"^https?://github\.com/(?<owner>[^/]+)/(?<repo>[^/]+)/(?:blob|raw)/(?<ref>[^/]+)/(?<path>.+)$");
+        var gh = Regex.Match(page, @"^https?://github\.com/(?<owner>[^/]+)/(?<repo>[^/]+)/(?:blob|raw)/(?<ref>[^/]+)/(?<path>.+)$");
         if (gh.Success)
             return new Uri($"https://raw.githubusercontent.com/{gh.Groups["owner"].Value}/{gh.Groups["repo"].Value}/{gh.Groups["ref"].Value}/{gh.Groups["path"].Value}");
+        // https://github.com/owner/repo/tree/ref[/dir] → that folder's README
+        var tree = Regex.Match(page, @"^https?://github\.com/(?<owner>[^/]+)/(?<repo>[^/]+)/tree/(?<ref>[^/]+)(?:/(?<path>.+?))?/?$");
+        if (tree.Success)
+        {
+            var dir = tree.Groups["path"].Success ? tree.Groups["path"].Value.TrimEnd('/') + "/" : "";
+            return new Uri($"https://raw.githubusercontent.com/{tree.Groups["owner"].Value}/{tree.Groups["repo"].Value}/{tree.Groups["ref"].Value}/{dir}README.md");
+        }
         // https://github.com/owner/repo → README
-        var repoOnly = Regex.Match(uri.AbsoluteUri, @"^https?://github\.com/(?<owner>[^/]+)/(?<repo>[^/#?]+)/?$");
+        var repoOnly = Regex.Match(page, @"^https?://github\.com/(?<owner>[^/]+)/(?<repo>[^/#?]+)/?$");
         if (repoOnly.Success)
             return new Uri($"https://raw.githubusercontent.com/{repoOnly.Groups["owner"].Value}/{repoOnly.Groups["repo"].Value}/HEAD/README.md");
         // GitLab blob → raw
-        var gl = Regex.Match(uri.AbsoluteUri, @"^(?<host>https?://gitlab\.com/.+?)/-/blob/(?<rest>.+)$");
+        var gl = Regex.Match(page, @"^(?<host>https?://gitlab\.com/.+?)/-/blob/(?<rest>.+)$");
         if (gl.Success) return new Uri($"{gl.Groups["host"].Value}/-/raw/{gl.Groups["rest"].Value}");
         return uri;
     }

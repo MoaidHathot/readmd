@@ -231,6 +231,9 @@ public sealed partial class MarkdownTerminalRenderer
                 return;
             }
             var collapsed = HtmlFragments.CollapseWhitespace(text);
+            // Images and text are buffered separately; text arriving after an image (the classic
+            // centred README header: <img><br><b>Name</b>) must come out below it, in source order.
+            if (_cell is null && _paraImages.Count > 0 && collapsed.Trim().Length > 0) FlushParagraphKeepingAlignment();
             var target = _cell ?? _para;
             // Drop a leading space at the very start of a paragraph, and never let two spaces meet
             // across adjacent text runs (HTML semantics).
@@ -254,8 +257,10 @@ public sealed partial class MarkdownTerminalRenderer
                 {
                     var src = tok.Attr("src");
                     if (string.IsNullOrEmpty(src)) return;
-                    if (_inPicture) { _paraImages.Add((PickPictureSource(src), tok.Attr("alt") ?? "", r._html.CurrentLink is { } l ? r._links[l].Url : null)); _inPicture = false; _pictureSources.Clear(); return; }
                     if (_cell is not null) { r.Leaf(_cell, $"{Glyphs.ImagePlaceholder} {tok.Attr("alt") ?? ""}".TrimEnd(), Theme.Muted, CellStyle.Italic, null); return; }
+                    // Text already buffered goes out first so the image lands where it was written.
+                    if (_para.Any(s => s.Text.Trim().Length > 0)) FlushParagraphKeepingAlignment();
+                    if (_inPicture) { _paraImages.Add((PickPictureSource(src), tok.Attr("alt") ?? "", r._html.CurrentLink is { } l ? r._links[l].Url : null)); _inPicture = false; _pictureSources.Clear(); return; }
                     _paraImages.Add((src, tok.Attr("alt") ?? "", r._html.CurrentLink is { } lk ? r._links[lk].Url : null));
                     return;
                 }
@@ -464,7 +469,17 @@ public sealed partial class MarkdownTerminalRenderer
             EmitSummary();
         }
 
-        private void FlushParagraph()
+        /// <summary>Flushes the buffered text/images without ending the block: alignment and list state survive for what follows.</summary>
+        private void FlushParagraphKeepingAlignment()
+        {
+            bool center = _center, right = _right, pendingMarker = _pendingListMarker; var marker = _pendingMarker;
+            FlushParagraph(keepAlignment: true);
+            _center = center; _right = right;
+            // A list marker is consumed by the first flushed piece; later pieces hang under it.
+            if (pendingMarker && r._lines.Count == 0) { _pendingListMarker = pendingMarker; _pendingMarker = marker; }
+        }
+
+        private void FlushParagraph(bool keepAlignment = false)
         {
             if (_skipDepth > 0) { _para.Clear(); return; }
             bool hasText = _para.Any(s => !string.IsNullOrWhiteSpace(s.Text) && s.Text != "\n");
@@ -505,7 +520,7 @@ public sealed partial class MarkdownTerminalRenderer
                 r._lines.Add(r.NewLine(indent, null, 0, gutterColor, gutter));
             }
             if (_center || _right) r.AlignLines(start, _center ? 0.5 : 1.0);
-            if (r._lines.Count > start && _headingLevel == 0 && _lists.Count == 0) r.AddBlank();
+            if (r._lines.Count > start && _headingLevel == 0 && _lists.Count == 0 && !keepAlignment) r.AddBlank();
             _para.Clear();
             _paraImages.Clear();
             _pendingListMarker = false;

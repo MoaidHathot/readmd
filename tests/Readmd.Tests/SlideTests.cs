@@ -40,6 +40,9 @@ public class SlideTests
         var deck = SlideDeck.Split(md);
         Assert.Equal(2, deck.Count);
         Assert.StartsWith("---\ntitle: Deck\n---", deck[0].Markdown);
+        Assert.Equal("---\ntitle: Deck\n---", deck.FrontMatter);
+        Assert.Equal("# Intro", deck.BodyOf(deck[0]).Trim());    // handouts place the front matter once, at the top
+        Assert.Equal("# Next", deck.BodyOf(deck[1]).Trim());
         Assert.Equal("Intro", deck[0].Title);
         var leading = SlideDeck.Split("---\n\n# A\n\n---\n\n# B\n");
         Assert.Equal(2, leading.Count);
@@ -148,7 +151,10 @@ public class SlideTests
         v.Press("n");
         v.Press("N");
         Assert.True(v.NotesShown);
-        Assert.Contains(v.FrameText(), r => r.Contains("remember b"));
+        var frame = v.FrameText();
+        Assert.Contains(frame, r => r.Contains("remember b"));
+        Assert.Contains(frame, r => r.Contains("N / esc close"));          // footer survives (card height includes it)
+        Assert.Contains(frame, r => r.Contains("Notes") && r.Contains("slide 2/3"));
         v.Press("esc");
         Assert.False(v.NotesShown);
         v.RunCommand("slides");

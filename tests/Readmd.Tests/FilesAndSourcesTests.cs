@@ -121,6 +121,9 @@ public class FilesAndSourcesTests : IDisposable
     [InlineData("https://github.com/owner/repo/blob/main/docs/a.md", "https://raw.githubusercontent.com/owner/repo/main/docs/a.md")]
     [InlineData("https://github.com/owner/repo", "https://raw.githubusercontent.com/owner/repo/HEAD/README.md")]
     [InlineData("https://gitlab.com/g/p/-/blob/main/README.md", "https://gitlab.com/g/p/-/raw/main/README.md")]
+    [InlineData("https://github.com/owner/repo/blob/main/docs/a.md?plain=1#L10", "https://raw.githubusercontent.com/owner/repo/main/docs/a.md")]
+    [InlineData("https://github.com/owner/repo/tree/main/docs", "https://raw.githubusercontent.com/owner/repo/main/docs/README.md")]
+    [InlineData("https://github.com/owner/repo/tree/v2", "https://raw.githubusercontent.com/owner/repo/v2/README.md")]
     [InlineData("https://example.com/x/doc.md", "https://example.com/x/doc.md")]
     public void Remote_arguments_map_to_raw_urls(string arg, string expected)
     {
@@ -179,6 +182,20 @@ public class FilesAndSourcesTests : IDisposable
         Assert.Contains(rows, r => r.Contains("advanced.md:3"));
         v.Press("esc");
         Assert.DoesNotContain(v.FrameText(), r => r.Contains("Search all files"));
+    }
+
+    [Fact]
+    public void Edit_command_accepts_a_fragment()
+    {
+        var readme = Path.Combine(_root, "README.md");
+        File.WriteAllText(Path.Combine(_root, "docs", "guide", "intro.md"), "# Introduction\n\n" + string.Concat(Enumerable.Repeat("filler\n\n", 30)) + "## Deep section\n\ntarget\n");
+        var v = Open(readme, 80, 12);
+        v.RunCommand("e docs/guide/intro.md#deep-section");
+        SpinWait.SpinUntil(() => v.CurrentPath.EndsWith("intro.md", StringComparison.OrdinalIgnoreCase) && v.Scroll > 0, 3000);
+        Assert.EndsWith("intro.md", v.CurrentPath, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(v.FrameText(), r => r.Contains("Deep section"));
+        v.RunCommand("e #introduction");
+        Assert.Equal(0, v.Scroll);
     }
 
     [Fact]

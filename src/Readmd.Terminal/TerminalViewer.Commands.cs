@@ -150,9 +150,18 @@ public sealed partial class TerminalViewer
     private void OpenTarget(string target)
     {
         if (LinkResolver.IsExternal(target)) { OpenUrl(target); SetStatus("Opened: " + target); return; }
+        // ":e guide.md#section" — a fragment selects the heading/anchor to land on; ":e #section" stays in this file.
+        string? anchor = null;
+        int hash = target.IndexOf('#');
+        if (hash >= 0) { anchor = target[(hash + 1)..]; target = target[..hash]; }
+        if (target.Length == 0)
+        {
+            if (anchor is not null) { int line = FindAnchorLine(anchor); if (line >= 0) ScrollTo(line); else SetStatus("No such section: #" + anchor); }
+            return;
+        }
         var path = Path.GetFullPath(target, Path.GetDirectoryName(_currentPath) ?? ".");
         if (!File.Exists(path)) { SetStatus("Not found: " + target); return; }
-        if (LinkResolver.IsMarkdownFile(path)) NavigateTo(path, null);
+        if (LinkResolver.IsMarkdownFile(path)) NavigateTo(path, string.IsNullOrEmpty(anchor) ? null : anchor);
         else { OpenUrl(path); SetStatus("Opened: " + Path.GetFileName(path)); }
     }
 

@@ -48,7 +48,7 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
         _detailsIndent = 0;
         _detailsDepth = 0;
         _toc = toc ?? [];
-        RenderFrontMatterHeader(frontMatter);
+        RenderFrontMatterHeader(frontMatter, FirstHeadingText(document));
         if (document is ContainerBlock container)
         {
             foreach (var block in container)
@@ -167,12 +167,27 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
         }
     }
 
+    /// <summary>Plain text of the document's first H1, if it is the first heading (for de-duplicating the front-matter title).</summary>
+    private static string? FirstHeadingText(MarkdownObject document)
+    {
+        if (document is not ContainerBlock container) return null;
+        foreach (var block in container)
+        {
+            if (block is HeadingBlock h)
+                return h.Level == 1 && h.Inline is not null ? GetInlineText(h.Inline).Trim() : null;
+        }
+        return null;
+    }
+
     // Renders a compact metadata header (title/subtitle/author·date/tags) from YAML front matter.
-    // Emits nothing when there's no recognized metadata, so plain documents look unchanged.
-    private void RenderFrontMatterHeader(FrontMatter? fm)
+    // Emits nothing when there's no recognized metadata, so plain documents look unchanged. A title
+    // that merely repeats the document's first H1 is left out so it doesn't read twice.
+    private void RenderFrontMatterHeader(FrontMatter? fm, string? firstHeading = null)
     {
         if (fm is null || fm.IsEmpty) return;
         var title = fm.Get("title");
+        if (title is not null && firstHeading is not null && string.Equals(title.Trim(), firstHeading, StringComparison.OrdinalIgnoreCase))
+            title = null;
         var subtitle = fm.Get("subtitle") ?? fm.Get("description");
         var author = fm.Get("author") ?? fm.Get("authors");
         var date = fm.Get("date");

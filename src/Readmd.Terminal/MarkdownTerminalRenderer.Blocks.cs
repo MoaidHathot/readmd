@@ -157,7 +157,10 @@ public sealed partial class MarkdownTerminalRenderer
             TagBlock(itemStart, BlockKind.ListItem, listItem.Line + 1);
         }
         _listDepth--;
-        AddBlank();
+        // A nested list is part of its parent item: no blank after it, or a tight parent list
+        // ("1. one / - nested / 2. two") would gain a gap before its next item. Loose parents
+        // already separate their items; top-level lists end with the usual block spacing.
+        if (_listDepth == 0) AddBlank();
     }
 
     private int _listDepth;

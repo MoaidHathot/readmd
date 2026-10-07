@@ -40,8 +40,8 @@ public sealed class AnsiScreen : IDisposable
     // When set, the screen renders to an in-memory buffer with a fixed size and performs no terminal
     // I/O (no alt-screen, no Win32 calls). Used by the SixelView dev tool and the test harness.
     private readonly bool _capture;
-    private readonly int _capW;
-    private readonly int _capH;
+    private int _capW;
+    private int _capH;
     private readonly StringBuilder _captureBuffer = new(64 * 1024);
 
     /// <summary>Colour depth used for SGR output.</summary>
@@ -55,6 +55,14 @@ public sealed class AnsiScreen : IDisposable
 
     /// <summary>Creates an in-memory capture screen of a fixed size (no terminal side effects).</summary>
     public static AnsiScreen CreateCapture(int width, int height) => new(width, height);
+
+    /// <summary>Capture mode: simulates a terminal resize (tests).</summary>
+    internal void SetCaptureSize(int width, int height)
+    {
+        if (!_capture) return;
+        _capW = width; _capH = height;
+        _frameWidth = width; _frameHeight = height;
+    }
 
     private AnsiScreen(int width, int height)
     {
@@ -141,6 +149,9 @@ public sealed class AnsiScreen : IDisposable
     {
         _preamble.Clear();
         foreach (var r in _rows) r.Clear();
+        // Track the terminal height both ways: after a shrink, rows past the new bottom must not be
+        // flushed (they'd land on the last line or scroll the screen).
+        if (_rows.Count > _frameHeight) { _rows.RemoveRange(_frameHeight, _rows.Count - _frameHeight); _invalidateAll = true; }
         while (_rows.Count < _frameHeight) _rows.Add(new StringBuilder(256));
         _current = _preamble;
         if (_capture) _captureBuffer.Clear();

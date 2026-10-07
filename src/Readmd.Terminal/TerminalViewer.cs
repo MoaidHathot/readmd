@@ -310,6 +310,7 @@ public sealed partial class TerminalViewer : IAsyncDisposable
         if (deck is not null)
         {
             _deck = deck;
+            if (newFile) { _slideIndex = 0; _slideStep = 0; }
             _slideIndex = Math.Clamp(_slideIndex, 0, deck.Count - 1);
             _slideStep = Math.Clamp(_slideStep, 0, deck[_slideIndex].Fragments.Count - 1);
         }

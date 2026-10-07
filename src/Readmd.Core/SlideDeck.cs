@@ -32,7 +32,10 @@ public sealed class SlideDeck
     public int Count => Slides.Count;
     public Slide this[int index] => Slides[index];
 
-    private SlideDeck(List<Slide> slides) { Slides = slides; }
+    /// <summary>The document's front matter block (delimiters included), or "" — it also opens the first slide.</summary>
+    public string FrontMatter { get; }
+
+    private SlideDeck(List<Slide> slides, string frontMatter) { Slides = slides; FrontMatter = frontMatter; }
 
     private static readonly Regex ThematicBreak = new(@"^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$", RegexOptions.Compiled);
     private static readonly Regex SlideMarker = new(@"^\s*<!--\s*slide\s*-->\s*$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -50,6 +53,7 @@ public sealed class SlideDeck
         int currentStart = 1;
 
         int i = 0;
+        string frontMatter = "";
         // Front matter (--- … --- or +++ … +++) belongs to the first slide verbatim. A leading "---"
         // followed by a blank line is a slide separator, not front matter: the opening delimiter
         // must be followed directly by a "key:" / "key =" line (or a comment).
@@ -60,6 +64,7 @@ public sealed class SlideDeck
             if (close > 0)
             {
                 for (; i <= close; i++) current.Add(lines[i]);
+                frontMatter = string.Join("\n", lines[..(close + 1)]);
             }
         }
 
@@ -96,8 +101,14 @@ public sealed class SlideDeck
             prevBlank = line.Trim().Length == 0;
         }
         if (current.Any(l => l.Trim().Length > 0) || slides.Count == 0) slides.Add(Build(current, currentStart, slides.Count + 1));
-        return new SlideDeck(slides);
+        return new SlideDeck(slides, frontMatter);
     }
+
+    /// <summary>A slide's Markdown without the document front matter (which only the first slide carries).</summary>
+    public string BodyOf(Slide slide) =>
+        FrontMatter.Length > 0 && slide.Markdown.StartsWith(FrontMatter, StringComparison.Ordinal)
+            ? slide.Markdown[FrontMatter.Length..].TrimStart('\n')
+            : slide.Markdown;
 
     private static readonly Regex YamlKey = new(@"^\s*[\w\-\.""']+\s*:", RegexOptions.Compiled);
     private static readonly Regex TomlKey = new(@"^\s*(?:[\w\-\.""']+\s*=|\[)", RegexOptions.Compiled);

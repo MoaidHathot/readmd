@@ -19,6 +19,41 @@ public class MarkdownFidelityTests
         Assert.Contains("Readmd — terminal markdown", text);
         Assert.True(text.StartsWith("   "), "centred text has a left margin");
         Assert.Contains(lines, l => l.Contains("▣") && l.Contains("Logo"));
+        // Source order is kept: the image came first, the caption text after it (both centred).
+        int imageRow = lines.FindIndex(l => l.Contains("Logo"));
+        int textRow = lines.FindIndex(l => l.Contains("Readmd —"));
+        Assert.True(imageRow < textRow, $"image row {imageRow} should precede text row {textRow}");
+        // …and the reverse order stays reversed.
+        var reversed = Render.Lines("<p align=\"center\"><b>Title</b><br><img src=\"a.png\" alt=\"After\"></p>", width: 80);
+        Assert.True(reversed.FindIndex(l => l.Contains("Title")) < reversed.FindIndex(l => l.Contains("After")));
+    }
+
+    [Fact]
+    public void Superscript_and_subscript_letters_convert_when_unicode_has_them()
+    {
+        var text = DocumentTextRenderer.Render("x^th^ a~ij~ <sup>sup</sup> <sub>b</sub> 2^10^", dark: true, width: 80, color: false).Trim();
+        Assert.Equal("xᵗʰ aᵢⱼ ˢᵘᵖ _(b) 2¹⁰", text);   // no subscript "b" in Unicode → bracketed fallback
+    }
+
+    [Fact]
+    public void Nested_list_in_a_tight_list_adds_no_blank_before_the_next_item()
+    {
+        var text = DocumentTextRenderer.Render("1. one\n   - nested\n2. two\n", dark: true, width: 80, color: false).TrimEnd();
+        Assert.Equal("1. one\n   ◦ nested\n2. two", text);
+        var loose = DocumentTextRenderer.Render("- a\n\n- b\n  - nested\n\n- c\n", dark: true, width: 80, color: false).TrimEnd();
+        Assert.Equal("• a\n\n• b\n  ◦ nested\n\n• c", loose);
+    }
+
+    [Fact]
+    public void Front_matter_title_is_not_repeated_when_the_first_heading_says_the_same()
+    {
+        static List<string> Lines(string md) => DocumentTextRenderer.Render(md, dark: true, width: 60, color: false).Split('\n').ToList();
+        var same = Lines("---\ntitle: My Doc\nauthor: Me\n---\n\n# My Doc\n\ntext\n");
+        Assert.Single(same, l => l.Contains("My Doc"));
+        Assert.Contains(same, l => l.Contains("Me"));
+        var different = Lines("---\ntitle: Full Title\n---\n\n# Short\n");
+        Assert.Contains(different, l => l.Contains("Full Title"));
+        Assert.Contains(different, l => l.Contains("Short"));
     }
 
     [Fact]

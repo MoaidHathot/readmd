@@ -295,17 +295,21 @@ public static class MathRenderer
 
     private const string SuperDigits = "⁰¹²³⁴⁵⁶⁷⁸⁹";
     private const string SubDigits = "₀₁₂₃₄₅₆₇₈₉";
+    // Every Latin letter Unicode provides as a modifier/superscript letter (no q) and as a subscript
+    // (no b c d f g q w y z): a run converts only when all of its characters are covered.
     private static readonly Dictionary<char, char> SuperMap = new()
     {
-        ['+'] = '⁺', ['-'] = '⁻', ['='] = '⁼', ['('] = '⁽', [')'] = '⁾', ['n'] = 'ⁿ', ['i'] = 'ⁱ',
-        ['a'] = 'ᵃ', ['b'] = 'ᵇ', ['c'] = 'ᶜ', ['d'] = 'ᵈ', ['e'] = 'ᵉ', ['x'] = 'ˣ', ['y'] = 'ʸ',
+        ['+'] = '⁺', ['-'] = '⁻', ['='] = '⁼', ['('] = '⁽', [')'] = '⁾', [' '] = ' ', ['.'] = '·',
+        ['a'] = 'ᵃ', ['b'] = 'ᵇ', ['c'] = 'ᶜ', ['d'] = 'ᵈ', ['e'] = 'ᵉ', ['f'] = 'ᶠ', ['g'] = 'ᵍ', ['h'] = 'ʰ', ['i'] = 'ⁱ',
+        ['j'] = 'ʲ', ['k'] = 'ᵏ', ['l'] = 'ˡ', ['m'] = 'ᵐ', ['n'] = 'ⁿ', ['o'] = 'ᵒ', ['p'] = 'ᵖ', ['r'] = 'ʳ', ['s'] = 'ˢ',
+        ['t'] = 'ᵗ', ['u'] = 'ᵘ', ['v'] = 'ᵛ', ['w'] = 'ʷ', ['x'] = 'ˣ', ['y'] = 'ʸ', ['z'] = 'ᶻ',
     };
     private static readonly Dictionary<char, char> SubMap = new()
     {
-        ['+'] = '₊', ['-'] = '₋', ['='] = '₌', ['('] = '₍', [')'] = '₎',
-        ['a'] = 'ₐ', ['e'] = 'ₑ', ['i'] = 'ᵢ', ['j'] = 'ⱼ', ['o'] = 'ₒ', ['x'] = 'ₓ', ['n'] = 'ₙ',
+        ['+'] = '₊', ['-'] = '₋', ['='] = '₌', ['('] = '₍', [')'] = '₎', [' '] = ' ',
+        ['a'] = 'ₐ', ['e'] = 'ₑ', ['h'] = 'ₕ', ['i'] = 'ᵢ', ['j'] = 'ⱼ', ['k'] = 'ₖ', ['l'] = 'ₗ', ['m'] = 'ₘ', ['n'] = 'ₙ',
+        ['o'] = 'ₒ', ['p'] = 'ₚ', ['r'] = 'ᵣ', ['s'] = 'ₛ', ['t'] = 'ₜ', ['u'] = 'ᵤ', ['v'] = 'ᵥ', ['x'] = 'ₓ',
     };
-
     /// <summary>
     /// Converts a short run of text to Unicode super/subscript glyphs. Digits and the mapped letters
     /// convert directly; if any character has no super/subscript form, the whole run falls back to a
