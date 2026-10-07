@@ -492,8 +492,11 @@ public sealed partial class TerminalViewer
             }
             if (_searchHits.Count > 0)
             {
-                // pick the first hit at or after current scroll
-                _searchHitIndex = _searchHits.FindIndex(h => VisibleIndexOf(h.Line) >= _scroll);
+                // Pick the first hit at or after the current scroll. One pass over the visible lines
+                // gives every hit's row; a per-hit linear scan would be hits × lines on a common word.
+                var rowOf = new Dictionary<DisplayLine, int>(ReferenceEqualityComparer.Instance);
+                for (int i = 0; i < _lines.Count; i++) rowOf.TryAdd(_lines[i], i);
+                _searchHitIndex = _searchHits.FindIndex(h => rowOf.TryGetValue(h.Line, out var row) && row >= _scroll);
                 if (_searchHitIndex < 0) _searchHitIndex = 0;
                 if (jumpToFirst) ScrollToHit(_searchHitIndex);
             }

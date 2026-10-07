@@ -394,10 +394,10 @@ public sealed partial class TerminalViewer
     private int CurrentSectionIndex(IReadOnlyList<TocEntry> entries)
     {
         int best = -1;
+        var rows = HeadingRows();
         for (int i = 0; i < entries.Count; i++)
         {
-            int line = FindHeadingLine(entries[i].Id);
-            if (line >= 0 && line <= _scroll) best = i;
+            if (rows.TryGetValue(entries[i].Id, out int line) && line <= _scroll) best = i;
         }
         return best;
     }

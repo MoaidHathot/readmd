@@ -139,16 +139,26 @@ internal static class TextDiagramRenderer
             bool ok = false;
             try
             {
-                var psi = ExecutableResolver.Resolve(d2Path, ["--version"]);
-                if (psi is not null)
+                // Spawning `d2 --version` costs ~100 ms per run; remember the answer per executable.
+                var resolved = ExecutableResolver.Find(d2Path);
+                if (resolved is not null && ToolProbeCache.TryGet("d2-ascii", resolved) is { } cached)
                 {
-                    using var p = System.Diagnostics.Process.Start(psi);
-                    if (p is not null)
+                    ok = cached == "1";
+                }
+                else
+                {
+                    var psi = ExecutableResolver.Resolve(d2Path, ["--version"]);
+                    if (psi is not null)
                     {
-                        var output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
-                        p.WaitForExit(5000);
-                        ok = VersionAtLeast(output, 0, 7, 1);
+                        using var p = System.Diagnostics.Process.Start(psi);
+                        if (p is not null)
+                        {
+                            var output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
+                            p.WaitForExit(5000);
+                            ok = VersionAtLeast(output, 0, 7, 1);
+                        }
                     }
+                    if (resolved is not null) ToolProbeCache.Store("d2-ascii", resolved, ok ? "1" : "0");
                 }
             }
             catch { ok = false; }

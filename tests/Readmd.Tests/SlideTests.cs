@@ -107,7 +107,7 @@ public class SlideTests
         Assert.Contains(rows, r => r.Contains("One"));
         Assert.DoesNotContain(rows, r => r.Contains("Two"));
         // Vertically centred: the title is not on the first row.
-        Assert.False(rows[0].Contains("One"));
+        Assert.DoesNotContain("One", rows[0]);
         Assert.Contains("Slide 1/3", rows[^1]);
     }
 

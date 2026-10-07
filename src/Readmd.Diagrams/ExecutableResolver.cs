@@ -36,8 +36,12 @@ public static class ExecutableResolver
         return psi;
     }
 
-    /// <summary>Returns the resolved launcher file path for a command, or null if not found.</summary>
-    public static string? Find(string command)
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string?> FindMemo = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Returns the resolved launcher file path for a command, or null if not found. Memoized per process (PATH doesn't change mid-run).</summary>
+    public static string? Find(string command) => FindMemo.GetOrAdd(command, FindUncached);
+
+    private static string? FindUncached(string command)
     {
         // An explicit path (absolute or containing a directory separator) is used as-is when it
         // exists; otherwise we still try it verbatim so the OS can resolve it.

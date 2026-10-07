@@ -362,9 +362,15 @@ public sealed partial class TerminalViewer : IAsyncDisposable
         _pendingImages = parsed.Images;
         _pendingImageGroups = parsed.ImageGroups;
         _tocIndex = Math.Clamp(_tocIndex, 0, Math.Max(0, _toc.Count - 1));
+        _diagramIndents.Clear();
+        foreach (var line in _allLines)
+            if (line.DiagramKey is { } dk && !dk.StartsWith("reserve:")) _diagramIndents.TryAdd(dk, line.DiagramIndent);
         ResetFoldState();
         Project(anchor);
     }
+
+    /// <summary>Indent of each diagram/image anchor (stable across projections; read every frame).</summary>
+    private readonly Dictionary<string, int> _diagramIndents = new();
 
     /// <summary>Describes what is at the top of the viewport, for re-finding it after a layout change.</summary>
     private (string? HeadingId, int SourceLine, string Text, int Offset)? TopAnchor()

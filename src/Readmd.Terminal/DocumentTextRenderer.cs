@@ -27,12 +27,34 @@ public static class DocumentTextRenderer
         public bool DiagramSourceFallback { get; init; } = true;
     }
 
-    public static string Render(string markdown, bool dark, int width, bool color, Options? options = null)
+    public static string Render(string markdown, bool dark, int width, bool color, Options? options = null) =>
+        Compose(Layout(markdown, dark, width, color, options), options?.DiagramText);
+
+    /// <summary>A laid-out document awaiting composition: the lines plus the diagrams found in them.</summary>
+    public sealed class Laid
+    {
+        internal Laid(MarkdownTerminalRenderer renderer, MarkdownTerminalRenderer.RenderResult result, TerminalTheme theme, int width, bool color, Options options)
+        { Renderer = renderer; Result = result; Theme = theme; Width = width; Color = color; Options = options; }
+        internal MarkdownTerminalRenderer Renderer { get; }
+        internal MarkdownTerminalRenderer.RenderResult Result { get; }
+        internal TerminalTheme Theme { get; }
+        internal int Width { get; }
+        internal bool Color { get; }
+        internal Options Options { get; }
+
+        /// <summary>The diagrams the document contains, by key — so callers can pre-render text for them.</summary>
+        public IReadOnlyDictionary<string, DiagramRequest> Diagrams => Renderer.PendingDiagrams;
+    }
+
+    /// <summary>
+    /// Parses and lays out the document (one parse; TOC/front matter come from the same AST). Call
+    /// <see cref="Compose"/> to produce the text, optionally after rendering diagram box art for
+    /// <see cref="Laid.Diagrams"/>.
+    /// </summary>
+    public static Laid Layout(string markdown, bool dark, int width, bool color, Options? options = null)
     {
         options ??= Options.Default;
         var theme = TerminalTheme.For(dark);
-        // Parse once with the terminal pipeline, then derive TOC/front-matter from that same AST -
-        // no second parse and no HTML render (which the text output never displays).
         var (body, toml) = FrontMatter.StripToml(markdown);
         var ast = Timing.Measure("parse", () => Markdown.Parse(body, TerminalPipeline.For(options.SmartPunctuation)));
         var meta = Timing.Measure("metadata", () => MarkdownRenderer.ExtractMetadata(ast, "stdin.md", toml));
@@ -45,7 +67,14 @@ public static class DocumentTextRenderer
             TabSize = options.TabSize,
         };
         var result = Timing.Measure("layout", () => renderer.Render(ast, meta.Toc, meta.FrontMatter, body));
+        return new Laid(renderer, result, theme, width, color, options);
+    }
 
+    /// <summary>Turns a laid-out document into plain or ANSI text; diagrams become box art (when <paramref name="diagramText"/> supplies it) or their source.</summary>
+    public static string Compose(Laid laid, Func<DiagramRequest, string?>? diagramText)
+    {
+        var options = laid.Options; var result = laid.Result; var renderer = laid.Renderer; bool color = laid.Color;
+        diagramText ??= options.DiagramText;
         var sb = new StringBuilder();
         foreach (var line in result.Lines)
         {
@@ -53,7 +82,7 @@ public static class DocumentTextRenderer
             // Diagrams: box art when a backend can produce it, else the source — never a bare caption.
             if (line.DiagramKey is { } key && !key.StartsWith("reserve:") && renderer.PendingDiagrams.TryGetValue(key, out var req))
             {
-                var art = options.DiagramText?.Invoke(req);
+                var art = diagramText?.Invoke(req);
                 if (art is not null)
                 {
                     foreach (var row in art.Replace("\r\n", "\n").Split('\n'))
@@ -61,7 +90,7 @@ public static class DocumentTextRenderer
                 }
                 else if (options.DiagramSourceFallback)
                 {
-                    var scratch = new MarkdownTerminalRenderer(theme, Math.Max(20, width) - 1) { LineNumbers = options.LineNumbers, TabSize = options.TabSize, DeferHighlighting = !color };
+                    var scratch = new MarkdownTerminalRenderer(laid.Theme, Math.Max(20, laid.Width) - 1) { LineNumbers = options.LineNumbers, TabSize = options.TabSize, DeferHighlighting = !color };
                     foreach (var row in scratch.RenderCodeLines(req.Source, req.Kind.ToString().ToLowerInvariant(), line.DiagramIndent))
                         AppendLine(sb, row, color, options, result.Links);
                 }

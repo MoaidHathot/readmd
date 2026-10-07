@@ -22,12 +22,17 @@ internal sealed class D2Renderer
     {
         try
         {
+            var resolved = ExecutableResolver.Find(_d2Path);
+            if (resolved is null) return false;
+            if (ToolProbeCache.TryGet("d2", resolved) is { } cached) return cached == "ok";
             var psi = ExecutableResolver.Resolve(_d2Path, ["--version"]);
             if (psi is null) return false;
             using var proc = Process.Start(psi);
             if (proc is null) return false;
             proc.WaitForExit(5000);
-            return proc.ExitCode == 0;
+            bool ok = proc.ExitCode == 0;
+            ToolProbeCache.Store("d2", resolved, ok ? "ok" : "fail", negative: !ok);
+            return ok;
         }
         catch
         {

@@ -260,6 +260,7 @@ public sealed partial class TerminalViewer
     {
         lock (_stateLock)
         {
+            _frameHeadingRows = null;   // the per-frame heading→row map is rebuilt lazily
             _screen.BeginFrame();
 
             // Focused single-image view takes over the whole screen (its own clear + hint bar).
@@ -540,6 +541,7 @@ public sealed partial class TerminalViewer
     /// <summary>The column an image/diagram is drawn at: its first anchor's block indentation.</summary>
     private int IndentFor(string key)
     {
+        if (_diagramIndents.TryGetValue(key, out var indent)) return Math.Max(0, Math.Min(indent, _screen.Width / 2));
         foreach (var line in _lines)
             if (line.DiagramKey == key) return Math.Max(0, Math.Min(line.DiagramIndent, _screen.Width / 2));
         return 0;
@@ -878,17 +880,30 @@ public sealed partial class TerminalViewer
         _screen.Reset();
     }
 
+    // Heading id → visible row, rebuilt at most once per frame (Draw() resets it): the breadcrumb
+    // and the TOC overlay would otherwise scan the whole line list once per heading, every frame.
+    private Dictionary<string, int>? _frameHeadingRows;
+
+    private Dictionary<string, int> HeadingRows()
+    {
+        if (_frameHeadingRows is not null) return _frameHeadingRows;
+        var map = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (int i = 0; i < _lines.Count; i++)
+            if (_lines[i].HeadingId is { } id) map.TryAdd(id, i);
+        return _frameHeadingRows = map;
+    }
+
     /// <summary>"file.md › Section › Subsection" for the heading the viewport is in.</summary>
     private string Breadcrumb()
     {
         var name = _options.DisplayName ?? Path.GetFileName(_currentPath);
         if (_toc.Count == 0) return name;
         // Walk the TOC to the deepest heading at or above the top of the viewport, keeping ancestors.
+        var rows = HeadingRows();
         var trail = new List<TocEntry>();
         foreach (var e in _toc)
         {
-            int line = FindHeadingLine(e.Id);
-            if (line < 0 || line > _scroll) continue;
+            if (!rows.TryGetValue(e.Id, out int line) || line > _scroll) continue;
             while (trail.Count > 0 && trail[^1].Level >= e.Level) trail.RemoveAt(trail.Count - 1);
             trail.Add(e);
         }

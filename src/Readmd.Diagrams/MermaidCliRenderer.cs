@@ -22,12 +22,18 @@ internal sealed class MermaidCliRenderer
     {
         try
         {
+            var resolved = ExecutableResolver.Find(_mmdcPath);
+            if (resolved is null) return false;
+            // mmdc is a Node script: `--version` takes up to a couple of seconds. Remember the answer.
+            if (ToolProbeCache.TryGet("mmdc", resolved) is { } cached) return cached == "ok";
             var psi = ExecutableResolver.Resolve(_mmdcPath, ["--version"]);
             if (psi is null) return false;
             using var proc = Process.Start(psi);
             if (proc is null) return false;
             proc.WaitForExit(2500);
-            return proc.HasExited && proc.ExitCode == 0;
+            bool ok = proc.HasExited && proc.ExitCode == 0;
+            ToolProbeCache.Store("mmdc", resolved, ok ? "ok" : "fail", negative: !ok);
+            return ok;
         }
         catch { return false; }
     }

@@ -602,16 +602,15 @@ static async Task<int> RunPrintAsync(string full, bool fromStdin, bool dark, boo
     var width = !Console.IsOutputRedirected && Console.WindowWidth > 0 ? Console.WindowWidth : 100;
     if (layout.MaxWidth > 0) width = Math.Min(width, layout.MaxWidth + 1);
 
-    // Diagrams print as box art when d2/plantuml can produce it (rendered in parallel ahead of the
-    // layout, bounded by a short timeout so a pipe never hangs on a slow tool), else as their source.
-    // A cheap substring check keeps documents without such fences from paying for a second parse.
+    // One parse + layout; the diagrams it found drive the (optional) box-art pass below.
+    var laid = DocumentTextRenderer.Layout(markdown, dark, width, color,
+        new DocumentTextRenderer.Options(layout.LineNumbers, layout.TabSize, layout.SmartPunctuation, colors, hyperlinks));
+    Timing.Mark("laid out");
+
+    // Diagrams print as box art when d2/plantuml can produce it (rendered in parallel, bounded by a
+    // short timeout so a pipe never hangs on a slow tool), else as their source.
     Func<DiagramRequest, string?>? diagramText = null;
-    bool mayHaveTextDiagrams = markdown.Contains("d2", StringComparison.OrdinalIgnoreCase) || markdown.Contains("uml", StringComparison.OrdinalIgnoreCase) || markdown.Contains("c4", StringComparison.OrdinalIgnoreCase);
-    var requests = mayHaveTextDiagrams
-        ? DiagramExtractor.Extract(Markdig.Markdown.Parse(FrontMatter.StripToml(markdown).Markdown))
-            .Where(r => r.Kind is DiagramKind.D2 or DiagramKind.PlantUml or DiagramKind.C4PlantUml)
-            .DistinctBy(r => r.Key).ToList()
-        : [];
+    var requests = laid.Diagrams.Values.Where(r => r.Kind is DiagramKind.D2 or DiagramKind.PlantUml or DiagramKind.C4PlantUml).DistinctBy(r => r.Key).ToList();
     if (requests.Count > 0)
     {
         var renderer = getDiagrams();
@@ -628,8 +627,7 @@ static async Task<int> RunPrintAsync(string full, bool fromStdin, bool dark, boo
         Timing.Mark("diagram text");
     }
 
-    var text = DocumentTextRenderer.Render(markdown, dark, width, color,
-        new DocumentTextRenderer.Options(layout.LineNumbers, layout.TabSize, layout.SmartPunctuation, colors, hyperlinks) { DiagramText = diagramText });
+    var text = DocumentTextRenderer.Compose(laid, diagramText);
     Timing.Mark("rendered");
     // Write UTF-8 bytes straight to the raw stdout stream so box-drawing/Unicode survives a
     // redirected pipe or file regardless of the console's default code page. The stream is a
