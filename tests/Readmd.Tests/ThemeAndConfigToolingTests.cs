@@ -58,6 +58,37 @@ public class ThemeAndConfigToolingTests
         Assert.Equal(TerminalTheme.Dark.Text, plain.Text);
     }
 
+    [Fact]
+    public void Custom_theme_named_after_a_built_in_tweaks_that_built_in()
+    {
+        var t = TerminalTheme.FromColorTheme(new ColorTheme { Text = "#ffffff" }, "nord");
+        Assert.Equal(BuiltInThemes.Nord.Background, t.Background);    // the rest of Nord survives
+        Assert.Equal("#ffffff", TerminalTheme.Hex(t.Text));
+        Assert.Equal(TextMateSharp.Grammars.ThemeName.DarkPlus, t.EffectiveCodeTheme);
+        // An explicit base still wins over the name.
+        var other = TerminalTheme.FromColorTheme(new ColorTheme { Base = "dracula" }, "nord");
+        Assert.Equal(BuiltInThemes.Dracula.Background, other.Background);
+        // "dark"/"light" overrides start from the plain palettes as before.
+        var dark = TerminalTheme.FromColorTheme(new ColorTheme { Link = "#000000" }, "dark");
+        Assert.Equal(TerminalTheme.Dark.Background, dark.Background);
+    }
+
+    [Theory]
+    [InlineData("#12345")]
+    [InlineData("#1234567")]
+    [InlineData("#gg0000")]
+    [InlineData("red")]
+    public void Malformed_colours_are_rejected_and_fall_back(string bad)
+    {
+        Assert.Null(Rgb.TryFromHex(bad));
+        Assert.Throws<FormatException>(() => Rgb.FromHex(bad));
+        var t = TerminalTheme.FromColorTheme(new ColorTheme { Link = bad }, "x");
+        Assert.Equal(TerminalTheme.Dark.Link, t.Link);                  // silently keeps the base colour…
+        Assert.Contains(ConfigValidator.Validate(ReadmdConfig.Parse($$"""{ "themes": { "x": { "link": "{{bad}}" } } }""")),
+            i => i.Path == "themes.x.link" && i.Severity == ConfigValidator.Severity.Error);   // …and validate reports it
+        Assert.Equal(new Rgb(0x11, 0x22, 0x33), Rgb.FromHex(" #123 "));
+    }
+
     [Theory]
     [InlineData("dracula", "Dracula")]
     [InlineData("one-dark", "OneDark")]

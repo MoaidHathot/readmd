@@ -136,7 +136,13 @@ public static class CodeHighlighter
             if (rule.foreground > 0)
             {
                 var hex = themeManager.GetColor(rule.foreground);
-                if (!string.IsNullOrEmpty(hex)) return Rgb.FromHex(hex);
+                // TextMate themes may use #rrggbbaa; the alpha channel has no meaning on a terminal.
+                if (!string.IsNullOrEmpty(hex))
+                {
+                    var rgb = hex.TrimStart('#');
+                    if (rgb.Length == 8 || rgb.Length == 4) rgb = rgb[..(rgb.Length == 8 ? 6 : 3)];
+                    if (Rgb.TryFromHex(rgb) is { } c) return c;
+                }
             }
         }
         return null;

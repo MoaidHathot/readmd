@@ -141,6 +141,9 @@ public sealed class TerminalTheme
     {
         TerminalTheme? b = null;
         if (!string.IsNullOrWhiteSpace(ct.Base)) BuiltInThemes.All.TryGetValue(ct.Base, out b);
+        // A custom theme named after a built-in ("nord": { "text": … }) tweaks that built-in rather
+        // than starting from the plain dark/light palette — unless it asks for another base.
+        if (b is null && ct.Base is null && BuiltInThemes.All.TryGetValue(name, out var same) && name is not ("dark" or "light")) b = same;
         b ??= (ct.Dark ?? true) ? Dark : Light;
         bool dark = ct.Dark ?? b.IsDark;
         Rgb Pick(string? hex, Rgb fallback)

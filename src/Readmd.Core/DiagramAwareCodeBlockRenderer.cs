@@ -31,6 +31,10 @@ public sealed class DiagramAwareCodeBlockRenderer(CodeBlockRenderer? fallback) :
         _fallback.Write(renderer, obj);
     }
 
+    /// <summary>Emits the diagram figure for a diagram found outside a fence (an Azure DevOps <c>::: mermaid</c> container).</summary>
+    public static void WriteDiagramFigure(HtmlRenderer renderer, DiagramKind kind, string source) =>
+        WriteDiagram(renderer, kind, DiagramRequest.Create(kind, source), source);
+
     private static void WriteDiagram(HtmlRenderer renderer, DiagramKind kind, DiagramRequest request, string source)
     {
         var kindClass = kind.ToString().ToLowerInvariant();
@@ -68,6 +72,36 @@ public sealed class DiagramAwareCodeBlockRenderer(CodeBlockRenderer? fallback) :
         }
 
         renderer.Write("</figure>");
+        renderer.EnsureLine();
+    }
+}
+
+/// <summary>
+/// Renders Azure DevOps <c>::: mermaid</c> (or any <c>::: &lt;diagram kind&gt;</c>) custom containers
+/// as diagram figures, with the body taken verbatim from the document source — Markdig would
+/// otherwise interpret the diagram text as Markdown (<c>[*]</c> → emphasis, <c>--></c> → a dash).
+/// Other containers fall through to the standard <c>&lt;div class="…"&gt;</c> rendering.
+/// </summary>
+public sealed class DiagramContainerRenderer(string source, Markdig.Renderers.Html.HtmlObjectRenderer<Markdig.Extensions.CustomContainers.CustomContainer>? fallback)
+    : HtmlObjectRenderer<Markdig.Extensions.CustomContainers.CustomContainer>
+{
+    protected override void Write(HtmlRenderer renderer, Markdig.Extensions.CustomContainers.CustomContainer obj)
+    {
+        var kind = DiagramExtractor.MapKind(obj.Info);
+        if (kind is not null)
+        {
+            var body = DiagramExtractor.ContainerBody(source, obj);
+            if (!string.IsNullOrWhiteSpace(body))
+            {
+                DiagramAwareCodeBlockRenderer.WriteDiagramFigure(renderer, kind.Value, body);
+                return;
+            }
+        }
+        if (fallback is not null) { fallback.Write(renderer, obj); return; }
+        // No default renderer available: emit the children inside a plain div.
+        renderer.Write("<div>");
+        renderer.WriteChildren(obj);
+        renderer.Write("</div>");
         renderer.EnsureLine();
     }
 }

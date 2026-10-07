@@ -155,6 +155,15 @@ internal static class KeyReader
         if (b.Count == 1) { if (final) { ev = new KeyEvent(KeyKind.Escape); return 1; } return 0; }
         byte c1 = b[1];
 
+        // ESC ESC [ … : some terminals prefix a cursor-key sequence with a second ESC for Alt.
+        if (c1 == 0x1b && b.Count >= 3 && (b[2] == '[' || b[2] == 'O'))
+        {
+            var inner = TryParsePortable(b.GetRange(1, b.Count - 1), state, out var innerEv, final);
+            if (inner == 0) return 0;
+            ev = innerEv is not null && innerEv.Kind != KeyKind.Escape ? innerEv with { Alt = true } : innerEv;
+            return inner + 1;
+        }
+
         if (c1 == '[' || c1 == 'O')
         {
             // CSI ('[') or SS3 ('O') sequence. Find the final byte (0x40–0x7E).
@@ -288,8 +297,28 @@ internal static class KeyReader
         var key = s.Length > 0 ? s[^1] : '\0';
         // xterm modifiers: "1;<m>X" / "<n>;<m>~" where m-1 is a bit set: 1=shift 2=alt 4=ctrl.
         var (shift, alt, ctrl) = ParseModifier(s);
+
+        // kitty keyboard protocol "CSI code[;mods[:event]] u" and xterm modifyOtherKeys
+        // "CSI 27;mods;code ~": a Unicode key code plus modifiers.
+        if (key == 'u' && seq[0] == '[')
+        {
+            var first = s[..^1].Split(';')[0].Split(':')[0];
+            if (int.TryParse(first, out var code)) return FromKeyCode(code, shift, alt, ctrl);
+            return null;
+        }
+        if (key == '~' && s.StartsWith("27;"))
+        {
+            var parts = s[..^1].Split(';');
+            if (parts.Length >= 3 && int.TryParse(parts[2], out var code))
+            {
+                var (sh, al, ct) = ParseModifier("1;" + parts[1]);
+                return FromKeyCode(code, sh, al, ct);
+            }
+            return null;
+        }
         return key switch
         {
+            'M' when seq[0] == 'O' => new KeyEvent(KeyKind.Enter),      // SS3 M = keypad Enter
             'A' => new KeyEvent(KeyKind.Up, Ctrl: ctrl, Alt: alt, Shift: shift),
             'B' => new KeyEvent(KeyKind.Down, Ctrl: ctrl, Alt: alt, Shift: shift),
             'C' => new KeyEvent(KeyKind.Right, Ctrl: ctrl, Alt: alt, Shift: shift),
@@ -305,11 +334,37 @@ internal static class KeyReader
         };
     }
 
+    /// <summary>Maps a Unicode key code (kitty / modifyOtherKeys) to the event the legacy encodings would have produced.</summary>
+    private static KeyEvent? FromKeyCode(int code, bool shift, bool alt, bool ctrl)
+    {
+        switch (code)
+        {
+            case 13: return new KeyEvent(KeyKind.Enter, Ctrl: ctrl, Alt: alt, Shift: shift);
+            case 27: return new KeyEvent(KeyKind.Escape);
+            case 9: return new KeyEvent(KeyKind.Tab, Ctrl: ctrl, Alt: alt, Shift: shift);
+            case 127 or 8: return new KeyEvent(KeyKind.Backspace, Ctrl: ctrl, Alt: alt, Shift: shift);
+            case 32: return new KeyEvent(KeyKind.Char, ' ', Ctrl: ctrl, Alt: alt);
+            case 57414: return new KeyEvent(KeyKind.Enter, Ctrl: ctrl, Alt: alt, Shift: shift);   // keypad enter
+            case 57399 or 57400 or 57401 or 57402 or 57403 or 57404 or 57405 or 57406 or 57407 or 57408:
+                return new KeyEvent(KeyKind.Char, (char)('0' + (code - 57399)), Ctrl: ctrl, Alt: alt);   // keypad digits
+        }
+        if (code is >= 57364 and <= 57398) return new KeyEvent(KeyKind.Function, Number: code - 57364 + 1, Ctrl: ctrl, Alt: alt, Shift: shift);
+        if (code < 32 || code == 0x7f || code > 0x10FFFF || code is >= 0xD800 and <= 0xDFFF) return null;
+        var text = char.ConvertFromUtf32(code);
+        // Legacy encodings send Shift+letter as the uppercase letter and Ctrl+letter lowercase.
+        if (text.Length == 1 && char.IsLetter(text[0]))
+        {
+            if (shift && !ctrl) text = text.ToUpperInvariant();
+            else if (ctrl) text = text.ToLowerInvariant();
+        }
+        return new KeyEvent(KeyKind.Char, text[0], Ctrl: ctrl, Alt: alt, Text: text.Length > 1 ? text : null);
+    }
+
     private static (bool Shift, bool Alt, bool Ctrl) ParseModifier(string s)
     {
         int semi = s.IndexOf(';');
         if (semi < 0) return (false, false, false);
-        var rest = s[(semi + 1)..].TrimEnd('~', 'A', 'B', 'C', 'D', 'H', 'F', 'P', 'Q', 'S', 'R');
+        var rest = s[(semi + 1)..].TrimEnd('~', 'A', 'B', 'C', 'D', 'H', 'F', 'P', 'Q', 'S', 'R', 'u');
         int colon = rest.IndexOf(':');   // kitty-style "1;5:1" event-type suffix
         if (colon >= 0) rest = rest[..colon];
         if (!int.TryParse(rest, out var m) || m < 2) return (false, false, false);

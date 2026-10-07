@@ -191,4 +191,32 @@ public class InputParsingTests
         var evs = KeyReader.ParsePortableForTest(System.Text.Encoding.UTF8.GetBytes("é"));
         Assert.Equal('é', Assert.Single(evs).Char);
     }
+
+    [Theory]
+    [InlineData("\e[102;5u", KeyKind.Char, 'f', true, false, false)]      // kitty keyboard protocol: ctrl+f
+    [InlineData("\e[9;2u", KeyKind.Tab, '\0', false, false, true)]        // kitty: shift+tab
+    [InlineData("\e[106u", KeyKind.Char, 'j', false, false, false)]       // kitty: plain j
+    [InlineData("\e[13u", KeyKind.Enter, '\0', false, false, false)]
+    [InlineData("\e[27;5;102~", KeyKind.Char, 'f', true, false, false)]   // xterm modifyOtherKeys: ctrl+f
+    [InlineData("\e[27;3;120~", KeyKind.Char, 'x', false, true, false)]   // alt+x
+    [InlineData("\e\e[D", KeyKind.Left, '\0', false, true, false)]        // ESC-prefixed cursor key = alt
+    [InlineData("\eOM", KeyKind.Enter, '\0', false, false, false)]        // keypad enter
+    public void Modern_key_encodings_are_decoded(string seq, KeyKind kind, char ch, bool ctrl, bool alt, bool shift)
+    {
+        var evs = KeyReader.ParsePortableForTest(System.Text.Encoding.UTF8.GetBytes(seq));
+        var e = Assert.Single(evs);
+        Assert.Equal(kind, e.Kind);
+        if (kind == KeyKind.Char) Assert.Equal(ch, e.Char);
+        Assert.Equal(ctrl, e.Ctrl);
+        Assert.Equal(alt, e.Alt);
+        Assert.Equal(shift, e.Shift);
+    }
+
+    [Fact]
+    public void Kitty_shift_letter_arrives_uppercase_like_the_legacy_encoding()
+    {
+        var e = Assert.Single(KeyReader.ParsePortableForTest("\e[103;2u"u8.ToArray()));   // shift+g
+        Assert.Equal('G', e.Char);
+        Assert.Equal(EditorAction.GoBottom, KeyMap.Default.Resolve(KeyMap.TokenFor(e)!));
+    }
 }

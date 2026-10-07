@@ -26,6 +26,22 @@ public class CoreTests
     }
 
     [Fact]
+    public void Mermaid_container_renders_verbatim_in_html_and_is_collected()
+    {
+        // Azure DevOps style. The body contains Markdown-looking text ([*], -->) that must survive.
+        var md = "# T\n\n::: mermaid\nstateDiagram-v2\n  [*] --> Pending\n  Pending --> [*]\n:::\n\n::: note\nA **plain** container.\n:::\n";
+        var doc = new MarkdownRenderer().Parse("doc.md", md);
+        Assert.Single(doc.Diagrams);
+        Assert.Equal(DiagramKind.Mermaid, doc.Diagrams[0].Kind);
+        Assert.Contains("[*] --> Pending", doc.Diagrams[0].Source);
+        Assert.Contains("<pre class=\"mermaid\">stateDiagram-v2", doc.Html);
+        Assert.Contains("[*] --&gt; Pending", doc.Html);
+        Assert.DoesNotContain("<em>", doc.Html.Split("note")[0]);          // no emphasis inside the diagram
+        Assert.Contains("<strong>plain</strong>", doc.Html);                 // other containers still render Markdown
+        Assert.DoesNotContain(":::", doc.Html);
+    }
+
+    [Fact]
     public void Mermaid_block_is_collected_as_a_diagram()
     {
         var md = "```mermaid\ngraph TD; A-->B;\n```\n";

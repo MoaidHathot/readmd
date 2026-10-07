@@ -45,7 +45,7 @@ public sealed class MarkdownRenderer
         var toc = TocExtractor.Extract(document);
         var diagrams = DiagramExtractor.Extract(document, body);
         var title = DeriveTitle(frontMatter, toc, sourcePath);
-        var html = RenderHtml(document);
+        var html = RenderHtml(document, body);
         html = FrontMatterHeader.Prepend(html, frontMatter);
 
         return new MarkdownDocument(sourcePath, title, html, toc, diagrams, markdown)
@@ -76,7 +76,7 @@ public sealed class MarkdownRenderer
         return FrontMatter.Empty;
     }
 
-    private string RenderHtml(MarkdownObject document)
+    private string RenderHtml(MarkdownObject document, string source)
     {
         var writer = new StringWriter();
         var renderer = new HtmlRenderer(writer);
@@ -89,6 +89,10 @@ public sealed class MarkdownRenderer
             renderer.ObjectRenderers.Remove(existing);
         }
         renderer.ObjectRenderers.AddIfNotAlready(new DiagramAwareCodeBlockRenderer(existing));
+        // …and one for `::: mermaid` containers, whose body must stay verbatim.
+        var containerRenderer = renderer.ObjectRenderers.FindExact<Markdig.Extensions.CustomContainers.HtmlCustomContainerRenderer>();
+        if (containerRenderer is not null) renderer.ObjectRenderers.Remove(containerRenderer);
+        renderer.ObjectRenderers.AddIfNotAlready(new DiagramContainerRenderer(source, containerRenderer));
 
         renderer.Render(document);
         writer.Flush();

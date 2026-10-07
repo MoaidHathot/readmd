@@ -5,11 +5,20 @@ public readonly record struct Rgb(byte R, byte G, byte B)
 {
     public static Rgb FromHex(string hex)
     {
-        hex = hex.TrimStart('#');
+        hex = hex.Trim().TrimStart('#');
         if (hex.Length == 3)
             hex = string.Concat(hex[0], hex[0], hex[1], hex[1], hex[2], hex[2]);
+        // Exactly six hex digits: "#12345" or "#1234567" must not silently become some other colour.
+        if (hex.Length != 6) throw new FormatException($"'#{hex}' is not a #rgb or #rrggbb colour");
         var value = Convert.ToInt32(hex, 16);
         return new Rgb((byte)(value >> 16), (byte)(value >> 8), (byte)value);
+    }
+
+    /// <summary>Parses "#rgb" / "#rrggbb"; null when the text isn't a colour.</summary>
+    public static Rgb? TryFromHex(string? hex)
+    {
+        if (string.IsNullOrWhiteSpace(hex)) return null;
+        try { return FromHex(hex); } catch { return null; }
     }
 
     /// <summary>Linearly interpolates toward <paramref name="other"/> by <paramref name="t"/> (0..1).</summary>
