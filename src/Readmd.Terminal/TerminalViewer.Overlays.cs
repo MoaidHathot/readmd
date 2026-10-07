@@ -483,7 +483,7 @@ public sealed partial class TerminalViewer
     /// </summary>
     internal static TerminalViewer CreateHeadless(string markdown, int width = 80, int height = 24, bool dark = true, TerminalViewerOptions? options = null, string path = "capture.md")
     {
-        options ??= new TerminalViewerOptions { FilePath = path, DarkTerminal = dark, SynchronousHighlighting = true };
+        options ??= new TerminalViewerOptions { FilePath = path, DarkTerminal = dark, SynchronousHighlighting = true, RememberPosition = false };
         var v = new TerminalViewer(dark, width, height, [], options);
         v._currentPath = Path.GetFullPath(path);
         v.LoadMarkdown(v._currentPath, markdown, pushHistory: true);
@@ -552,6 +552,8 @@ public sealed partial class TerminalViewer
     internal bool InHintMode => _hintMode;
     internal IReadOnlyDictionary<string, int> Hints => _hints;
     internal string? StatusMessage => _statusMessage;
+    /// <summary>Headless: clears a transient status message as the render loop would after its timeout.</summary>
+    internal void ExpireStatus() { _statusMessage = null; _dirty = true; }
     internal IReadOnlyCollection<int> FoldedIds => _folded;
     internal string CurrentPath => _currentPath;
 

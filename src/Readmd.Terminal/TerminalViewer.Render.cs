@@ -325,6 +325,8 @@ public sealed partial class TerminalViewer
             // Also skip on the single clear-only frame after a deep clear (see above).
             if (!_helpMode && !_tocMode && !suppressDiagramsThisFrame)
                 DrawDiagrams(height);
+            DrawSidebar();
+            DrawScrollbar(height);
             DrawHintLabels();
             DrawStatusBar();
 
@@ -348,6 +350,24 @@ public sealed partial class TerminalViewer
             if (rowOnScreen < height && rowOnScreen + rowsTall > 0) return true;
         }
         return false;
+    }
+
+    /// <summary>A one-column scrollbar at the right edge (track + proportional thumb) when the document overflows.</summary>
+    private void DrawScrollbar(int height)
+    {
+        if (!_options.Scrollbar || _lines.Count <= height || height < 3) return;
+        int col = _screen.Width - 1;
+        int thumb = Math.Max(1, (int)Math.Round((double)height * height / _lines.Count));
+        int maxScroll = Math.Max(1, _lines.Count - height);
+        int top = (int)Math.Round((double)Math.Min(_scroll, maxScroll) / maxScroll * (height - thumb));
+        for (int row = 0; row < height; row++)
+        {
+            bool isThumb = row >= top && row < top + thumb;
+            _screen.MoveTo(row, col);
+            if (_solidBackground) _screen.SetBackground(_theme.Background);
+            _screen.SetForeground(isThumb ? _theme.Accent : _theme.Rule).Write(isThumb ? Glyphs.ScrollThumb : Glyphs.ScrollTrack);
+        }
+        _screen.Reset();
     }
 
     private void DrawLine(DisplayLine line, int lineIndex, int row, int width)
@@ -820,6 +840,8 @@ public sealed partial class TerminalViewer
             left = $" {Breadcrumb()}  {pct}%";
             if (_searchHits.Count > 0 && _searchHitIndex >= 0) left += $"  /{Truncate(_searchQuery, 16)} {_searchHitIndex + 1}/{_searchHits.Count}";
             if (_selectionMode) left += "  [SELECT]";
+            if (_follow) left += "  [FOLLOW]";
+            else if (_watchPaused) left += "  [paused]";
             if (_count > 0) left += $"  {_count}";
             if (_pendingChord.Count > 0) left += "  " + string.Join("", _pendingChord);
         }

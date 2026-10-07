@@ -21,6 +21,7 @@ public sealed partial class TerminalViewer
         if (_hintMode) { HandleHintKey(key); return; }
         if (_tocMode) { HandleTocKey(key); return; }
         if (_focusMode) { HandleFocusKey(key); return; }
+        if (HandleMarkKey(key)) return;
         if (_pendingExternalUrl is not null)
         {
             // Awaiting confirmation to open a remote link. Only respond to keyboard keys — mouse

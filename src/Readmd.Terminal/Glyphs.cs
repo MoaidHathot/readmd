@@ -81,6 +81,8 @@ public static class Glyphs
     public static string Crumb => Ascii ? " > " : " › ";
     public static string Cursor => Ascii ? "_" : "▏";
     public static string Dot => Ascii ? " - " : "  ·  ";
+    public static string ScrollTrack => Ascii ? "|" : "│";
+    public static string ScrollThumb => Ascii ? "#" : "┃";
 
     /// <summary>Superscript digits for footnote references (ASCII: "[n]").</summary>
     public static string Superscript(int n)

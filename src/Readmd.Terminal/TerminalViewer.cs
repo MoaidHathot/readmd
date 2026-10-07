@@ -58,6 +58,36 @@ public sealed class TerminalViewerOptions
     /// <summary>Lines scrolled per mouse-wheel notch.</summary>
     public int WheelLines { get; init; } = 3;
 
+    /// <summary>Exports the current document: (sourcePath, outputPath) → error message or null.</summary>
+    public Func<string, string, Task<string?>>? Export { get; init; }
+
+    /// <summary>Name of the custom theme (for `:theme <name>`), when <see cref="Theme"/> comes from config.</summary>
+    public string? ThemeName { get; init; }
+
+    /// <summary>All named themes available to `:theme <name>` (built-in + config).</summary>
+    public IReadOnlyDictionary<string, TerminalTheme>? NamedThemes { get; init; }
+
+    /// <summary>Remember the reading position per file (and search history) across sessions.</summary>
+    public bool RememberPosition { get; init; } = true;
+
+    /// <summary>Override for the state file location (tests).</summary>
+    public string? StatePath { get; init; }
+
+    /// <summary>Show a scrollbar in the right-most column when the document is taller than the screen.</summary>
+    public bool Scrollbar { get; init; } = true;
+
+    /// <summary>Fetch remote (http/https) images. Off in --offline mode.</summary>
+    public bool AllowNetwork { get; init; } = true;
+
+    /// <summary>Live-reload when the file changes (W toggles it at runtime).</summary>
+    public bool Watch { get; init; } = true;
+
+    /// <summary>Open at this 1-based source line (`+N`).</summary>
+    public int? StartLine { get; init; }
+
+    /// <summary>Open with this search active and jump to the first match (`+/pattern`).</summary>
+    public string? StartSearch { get; init; }
+
     /// <summary>Test harness: highlight code on the calling thread so frames are deterministic.</summary>
     internal bool SynchronousHighlighting { get; init; }
 }
@@ -184,7 +214,7 @@ public sealed partial class TerminalViewer : IAsyncDisposable
         _currentPath = Path.GetFullPath(options.FilePath);
         var root = options.Root is not null ? Path.GetFullPath(options.Root) : Path.GetDirectoryName(_currentPath)!;
         _resolver = new LinkResolver(root);
-        _imageLoader = new Readmd.Diagrams.ImageLoader(root);
+        _imageLoader = new Readmd.Diagrams.ImageLoader(root) { AllowRemote = options.AllowNetwork };
         _theme = options.Theme ?? TerminalTheme.For(options.DarkTerminal);
         _keyMap = options.KeyMap ?? KeyMap.Default;
         _graphicsMode = options.GraphicsMode;
@@ -192,20 +222,28 @@ public sealed partial class TerminalViewer : IAsyncDisposable
         _diagramTheme = options.DiagramTheme;
         _watcher = new DocumentWatcher(_currentPath);
         _watcher.Changed += OnFileChanged;
+        if (options.RememberPosition)
+        {
+            try { _state = new StateStore(options.StatePath); _searchHistory.AddRange(_state.SearchHistory); }
+            catch { _state = null; }
+        }
     }
 
     public async Task RunAsync()
     {
         _screen = new AnsiScreen { Colors = _options.Colors, Hyperlinks = _options.Hyperlinks };
         _wheelLines = Math.Max(1, _options.WheelLines);
+        _watchPaused = !_options.Watch;
         try
         {
             // Paint a minimal frame immediately so the terminal doesn't sit on a blank alternate
             // screen while the first parse/layout runs (large documents can take a moment).
             DrawLoadingFrame();
             await LoadAsync(_currentPath, pushHistory: true);
-            SetStatus("press ? for help · f: link hints · Enter opens the first link", 5);
+            ApplyStartPosition();
+            if (_statusMessage is null) SetStatus("press ? for help · f: link hints · Enter opens the first link", 5);
             RenderLoop();
+            SavePosition();
         }
         finally
         {
@@ -213,6 +251,14 @@ public sealed partial class TerminalViewer : IAsyncDisposable
             AnsiScreen.RestoreInputMode();
         }
         await Task.CompletedTask;
+    }
+
+    /// <summary>Start position: an explicit +N / +/pattern wins over the remembered position.</summary>
+    internal void ApplyStartPosition()
+    {
+        if (_options.StartLine is { } startLine) GoToSourceLine(startLine);
+        else if (!string.IsNullOrEmpty(_options.StartSearch)) { _searchQuery = _options.StartSearch; RecomputeSearch(); }
+        else RestoreSavedPosition();
     }
 
     private void DrawLoadingFrame()
@@ -536,27 +582,28 @@ public sealed partial class TerminalViewer : IAsyncDisposable
     }
 
     /// <summary>
-    /// The width content is laid out to: the terminal width (minus one column) capped by the
-    /// configured reading width, if any. Content narrower than the terminal is centred.
+    /// The width content is laid out to: the terminal width (minus the scrollbar column and any TOC
+    /// sidebar) capped by the configured reading width, if any. Content narrower than the remaining
+    /// space is centred.
     /// </summary>
     private int ContentWidth
     {
         get
         {
-            int full = _screen.Width - 1;
-            int max = _options.MaxWidth;
+            int full = Math.Max(20, _screen.Width - 1 - SidebarWidth);
+            int max = _maxWidthOverride >= 0 ? _maxWidthOverride : _options.MaxWidth;
             return max > 0 ? Math.Min(full, max) : full;
         }
     }
 
-    /// <summary>Left margin (columns) that centres a width-capped document in the terminal.</summary>
+    /// <summary>Left margin (columns): the sidebar plus centring of a width-capped document.</summary>
     private int ContentOffset
     {
         get
         {
-            int full = _screen.Width - 1;
+            int full = Math.Max(20, _screen.Width - 1 - SidebarWidth);
             int content = ContentWidth;
-            return content < full ? (full - content) / 2 : 0;
+            return SidebarWidth + (content < full ? (full - content) / 2 : 0);
         }
     }
 
@@ -577,10 +624,12 @@ public sealed partial class TerminalViewer : IAsyncDisposable
 
     private void OnFileChanged(string path)
     {
+        if (_watchPaused) return;
         _ = Task.Run(async () =>
         {
             await LoadAsync(path, pushHistory: false);
-            SetStatus("Reloaded", 1.2);
+            if (_follow) lock (_stateLock) { _scroll = Math.Max(0, _lines.Count - ViewportHeight); _dirty = true; }
+            SetStatus(_follow ? "Reloaded (following)" : "Reloaded", 1.2);
         });
     }
 }

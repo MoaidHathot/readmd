@@ -757,8 +757,17 @@ public sealed partial class TerminalViewer
         {
             // Skip rule rows and strip gutters (bullets, quote bars, table rules) — keep the words.
             var t = l.PlainText;
-            if (t.Length > 0 && t.All(c => c is '─' or '━' or '┬' or '┴' or '┼' or '┌' or '┐' or '└' or '┘' or '├' or '┤' or ' ')) continue;
-            t = t.Replace("│", "\t").Replace("▌", "").TrimStart(' ', '•', '◦', '▪', '▸', '▾', '●', '◗', '·', '☑', '☐');
+            if (t.Length > 0 && t.All(c => c is '─' or '━' or '┬' or '┴' or '┼' or '┌' or '┐' or '└' or '┘' or '├' or '┤' or '-' or '+' or '=' or ' ')) continue;
+            if (info.Kind == BlockKind.Table)
+            {
+                // Table rows → tab-separated cells (trimmed), so the copy pastes into a spreadsheet.
+                var cells = t.Split('│', '|').Select(c => c.Trim()).ToList();
+                if (cells.Count > 0 && cells[0].Length == 0) cells.RemoveAt(0);
+                if (cells.Count > 0 && cells[^1].Length == 0) cells.RemoveAt(cells.Count - 1);
+                sb.Append(string.Join('\t', cells)).Append('\n');
+                continue;
+            }
+            t = t.Replace("▌", "").TrimStart(' ', '•', '◦', '▪', '▸', '▾', '●', '◗', '·', '☑', '☐', '*', '-', '+', '>', '|');
             sb.Append(t.Trim()).Append('\n');
         }
         return sb.ToString().TrimEnd('\n');
@@ -911,6 +920,7 @@ public sealed partial class TerminalViewer
         if (_tocMode) return; // overlay is keyboard-driven
         // Status bar row is the bottom; ignore clicks there.
         if (screenRow >= ViewportHeight) return;
+        if (SidebarClick(screenRow, screenCol)) return;
 
         int lineIndex = _scroll + screenRow;
         if (lineIndex < 0 || lineIndex >= _lines.Count) return;
@@ -1033,6 +1043,7 @@ public sealed partial class TerminalViewer
     private void NavigateTo(string absolutePath, string? anchor)
     {
         _scrollMemory[_currentPath] = _scroll;
+        SavePosition();
         _ = LoadAsync(absolutePath, pushHistory: true).ContinueWith(_ =>
         {
             lock (_stateLock)
@@ -1045,6 +1056,7 @@ public sealed partial class TerminalViewer
                 }
                 _dirty = true;
             }
+            if (anchor is null) RestoreSavedPosition();
         });
     }
 
@@ -1052,6 +1064,7 @@ public sealed partial class TerminalViewer
     {
         if (_historyIndex <= 0) { SetStatus("No previous page"); return; }
         _scrollMemory[_currentPath] = _scroll;
+        SavePosition();
         _historyIndex--;
         var target = _history[_historyIndex];
         _ = LoadAsync(target, pushHistory: false).ContinueWith(_ => RestoreScroll(target));
@@ -1061,6 +1074,7 @@ public sealed partial class TerminalViewer
     {
         if (_historyIndex >= _history.Count - 1) { SetStatus("No next page"); return; }
         _scrollMemory[_currentPath] = _scroll;
+        SavePosition();
         _historyIndex++;
         var target = _history[_historyIndex];
         _ = LoadAsync(target, pushHistory: false).ContinueWith(_ => RestoreScroll(target));
@@ -1528,25 +1542,7 @@ public sealed partial class TerminalViewer
         s.Length <= max ? s : TextWidth.TrimToWidth(s, Math.Max(1, max - 1)) + "…";
 
     // ---------------- stubs filled in by later phases ----------------
-    private void ToggleTocSidebar() => SetStatus("TOC sidebar: coming in the next update");
-    private void EnterCommandMode() { _commandMode = true; _commandText = ""; _dirty = true; }
-    private bool _commandMode;
-    private string _commandText = "";
-    private void HandleCommandKey(KeyEvent key)
-    {
-        if (key.Kind == KeyKind.Escape) { _commandMode = false; _dirty = true; return; }
-        if (key.Kind == KeyKind.Enter) { _commandMode = false; _dirty = true; RunCommand(_commandText.Trim()); return; }
-        if (key.Kind == KeyKind.Backspace) { if (_commandText.Length > 0) _commandText = _commandText[..^1]; else _commandMode = false; _dirty = true; return; }
-        if (key.Kind == KeyKind.Paste && key.Text is { } t) { _commandText += t.Split('\n')[0]; _dirty = true; return; }
-        if (key.Kind == KeyKind.Char && !key.Ctrl && !key.Alt && !char.IsControl(key.Char)) { _commandText += key.Char; _dirty = true; }
-    }
-    private void RunCommand(string command) => SetStatus("Unknown command: " + command);
-    private void ExportPrompt() => SetStatus("Export: coming in the next update");
     private void OpenQuickOpen() => SetStatus("Quick-open: coming in a later update");
     private void OpenProjectSearch() => SetStatus("Project search: coming in a later update");
     private void StepFile(int step) => SetStatus("Multi-file navigation: coming in a later update");
-    private void SetBookmarkPrompt() => SetStatus("Bookmarks: coming in a later update");
-    private void GoBookmarkPrompt() => SetStatus("Bookmarks: coming in a later update");
-    private void ToggleWatch() => SetStatus("Watch toggle: coming in the next update");
-    private void ToggleFollow() => SetStatus("Follow mode: coming in the next update");
 }

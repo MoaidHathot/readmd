@@ -140,8 +140,10 @@ public sealed partial class TerminalViewer
 }
 
 /// <summary>
-/// Writes text to the system clipboard. Uses the Win32 clipboard on Windows and also emits an
-/// OSC 52 escape (honored by Windows Terminal, WezTerm, kitty, iTerm2, …) so it works elsewhere.
+/// Writes text to the system clipboard. Uses the Win32 clipboard on Windows, the platform's
+/// clipboard tool elsewhere (<c>pbcopy</c>, <c>wl-copy</c>, <c>xclip</c>/<c>xsel</c>,
+/// <c>clip.exe</c> under WSL), and always also emits an OSC 52 escape (honored by Windows
+/// Terminal, WezTerm, kitty, iTerm2, foot, …; tmux-wrapped when needed) so it works over SSH too.
 /// </summary>
 internal static class Clipboard
 {
@@ -151,21 +153,61 @@ internal static class Clipboard
     public static void Copy(string text, AnsiScreen screen)
     {
         if (TestSink is { } sink) { sink(text); return; }
-        bool win32 = false;
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        bool native = false;
+        try
         {
-            try { win32 = TrySetWindowsClipboard(text); } catch { win32 = false; }
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) native = TrySetWindowsClipboard(text);
+            else native = TryExternalTool(text);
         }
+        catch { native = false; }
         // OSC 52 as a portable path / fallback (and for terminals that proxy the clipboard remotely).
-        if (!win32)
+        // Terminals cap the payload; 100 KB is a safe, generous limit.
+        if (!native || text.Length < 100_000)
         {
             try
             {
                 var b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(text));
-                screen.WriteControlNow($"\e]52;c;{b64}\a");
+                screen.WriteControlNow(screen.Passthrough($"\e]52;c;{b64}\a"));
             }
             catch { /* best effort */ }
         }
+    }
+
+    // macOS: pbcopy. Linux: wl-copy (Wayland), xclip/xsel (X11). WSL: clip.exe. Quiet, short timeout.
+    private static bool TryExternalTool(string text)
+    {
+        var candidates = new List<(string File, string Args)>();
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX)) candidates.Add(("pbcopy", ""));
+        else
+        {
+            if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WAYLAND_DISPLAY"))) candidates.Add(("wl-copy", ""));
+            if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DISPLAY")))
+            {
+                candidates.Add(("xclip", "-selection clipboard"));
+                candidates.Add(("xsel", "--clipboard --input"));
+            }
+            if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WSL_DISTRO_NAME")) || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WSL_INTEROP")))
+                candidates.Add(("clip.exe", ""));
+        }
+        foreach (var (file, args) in candidates)
+        {
+            try
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo(file, args)
+                {
+                    RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+                    UseShellExecute = false, CreateNoWindow = true,
+                };
+                using var p = System.Diagnostics.Process.Start(psi);
+                if (p is null) continue;
+                p.StandardInput.Write(text);
+                p.StandardInput.Close();
+                if (!p.WaitForExit(1500)) { try { p.Kill(); } catch { } continue; }
+                if (p.ExitCode == 0) return true;
+            }
+            catch { /* tool missing: try the next */ }
+        }
+        return false;
     }
 
     // ---- Win32 clipboard ----

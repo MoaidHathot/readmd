@@ -62,6 +62,18 @@ public sealed class ReadmdConfig
     /// <summary>Treat East Asian Ambiguous characters as wide, as CJK-locale terminals do (default false).</summary>
     [JsonPropertyName("ambiguousWide")] public bool? AmbiguousWide { get; set; }
 
+    /// <summary>Allow network access (remote images, online diagram rendering). false = offline (default true).</summary>
+    [JsonPropertyName("network")] public bool? Network { get; set; }
+
+    /// <summary>Remember the reading position per file and search history across sessions (default true).</summary>
+    [JsonPropertyName("rememberPosition")] public bool? RememberPosition { get; set; }
+
+    /// <summary>Show a scrollbar at the right edge (default true).</summary>
+    [JsonPropertyName("scrollbar")] public bool? Scrollbar { get; set; }
+
+    /// <summary>Live-reload on file change (default true).</summary>
+    [JsonPropertyName("watch")] public bool? Watch { get; set; }
+
     /// <summary>Named custom color themes that can be selected via <see cref="Theme"/>.</summary>
     [JsonPropertyName("themes")] public Dictionary<string, ColorTheme>? Themes { get; set; }
 
@@ -108,6 +120,10 @@ public sealed class ReadmdConfig
             ConfirmExternalLinks = overrides.ConfirmExternalLinks ?? ConfirmExternalLinks,
             Ascii = overrides.Ascii ?? Ascii,
             AmbiguousWide = overrides.AmbiguousWide ?? AmbiguousWide,
+            Network = overrides.Network ?? Network,
+            RememberPosition = overrides.RememberPosition ?? RememberPosition,
+            Scrollbar = overrides.Scrollbar ?? Scrollbar,
+            Watch = overrides.Watch ?? Watch,
             Themes = MergeDict(Themes, overrides.Themes),
             Keys = MergeDict(Keys, overrides.Keys),
         };

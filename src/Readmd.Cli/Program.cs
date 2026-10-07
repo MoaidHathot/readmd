@@ -68,6 +68,29 @@ var asciiOption = new Option<bool>("--ascii")
 {
     Description = "Use plain ASCII glyphs instead of box drawing and symbols (for fonts/terminals without them, or clean piped text).",
 };
+var offlineOption = new Option<bool>("--offline")
+{
+    Description = "Never touch the network: remote images are not fetched and no online diagram service is used.",
+};
+var noWatchOption = new Option<bool>("--no-watch")
+{
+    Description = "Don't live-reload when the file changes (W toggles it at runtime).",
+};
+
+// `+N` / `+/pattern` (less/vim style) are handled before System.CommandLine sees the arguments.
+int? startLine = null;
+string? startSearch = null;
+var filteredArgs = new List<string>(args.Length);
+foreach (var a in args)
+{
+    if (a.Length > 1 && a[0] == '+' && !a.StartsWith("++"))
+    {
+        if (a[1] == '/') { startSearch = a[2..]; continue; }
+        if (int.TryParse(a[1..], out var n)) { startLine = n; continue; }
+    }
+    filteredArgs.Add(a);
+}
+args = filteredArgs.ToArray();
 var widthOption = new Option<int?>("--width", ["-w"])
 {
     Description = "Maximum reading width in columns (content is centred when the terminal is wider); also the wrap width for --print. Default: full width (config: maxWidth).",
@@ -94,6 +117,8 @@ var root = new RootCommand("readmd — a terminal-first Markdown viewer with liv
     widthOption,
     graphicsOption,
     asciiOption,
+    offlineOption,
+    noWatchOption,
 };
 
 // Replace the built-in --version (which prints the bare version) with a branded one that
@@ -157,6 +182,8 @@ root.SetAction(async (parse, ct) =>
     var widthArg = parse.GetValue(widthOption);
     var graphicsArg = parse.GetValue(graphicsOption);
     var asciiArg = parse.GetValue(asciiOption);
+    var offlineArg = parse.GetValue(offlineOption);
+    var noWatch = parse.GetValue(noWatchOption);
 
     var fromStdin = file == "-";
     string full;
@@ -198,6 +225,7 @@ root.SetAction(async (parse, ct) =>
     // Global rendering switches (glyph set, East Asian width policy) apply to every output path.
     Readmd.Terminal.Glyphs.Ascii = asciiArg || (config.Ascii ?? false) || Environment.GetEnvironmentVariable("READMD_ASCII") is "1" or "true";
     Readmd.Terminal.TextWidthSettings.AmbiguousWide = config.AmbiguousWide ?? false;
+    var offline = offlineArg || config.Network == false || Environment.GetEnvironmentVariable("READMD_OFFLINE") is "1" or "true";
     var themeStr = themeArg ?? config.Theme ?? "auto";
     var backgroundStr = backgroundArg ?? config.Background ?? "terminal";
     var d2Path = d2PathArg ?? config.D2Path;
@@ -241,13 +269,31 @@ root.SetAction(async (parse, ct) =>
         LineNumbers: config.LineNumbers ?? true,
         TabSize: Math.Clamp(config.TabSize ?? 4, 1, 16),
         SmartPunctuation: config.SmartPunctuation ?? false);
+    // Every named theme the viewer can switch to with `:theme <name>` (built-ins + config).
+    var namedThemes = new Dictionary<string, Readmd.Terminal.TerminalTheme>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["dark"] = Readmd.Terminal.TerminalTheme.Dark,
+        ["light"] = Readmd.Terminal.TerminalTheme.Light,
+    };
+    if (config.Themes is not null)
+        foreach (var (name, ct2) in config.Themes)
+            namedThemes[name] = Readmd.Terminal.TerminalTheme.FromColorTheme(ct2);
+
     var viewerPrefs = new ViewerPrefs(
         ThemeAuto: themeStr.Equals("auto", StringComparison.OrdinalIgnoreCase) && customTheme is null,
         GraphicsAuto: graphicsAuto,
         Colors: colorMode,
         Hyperlinks: config.Hyperlinks ?? true,
         WheelLines: Math.Clamp(config.WheelLines ?? 3, 1, 20),
-        ConfirmExternalLinks: config.ConfirmExternalLinks ?? true);
+        ConfirmExternalLinks: config.ConfirmExternalLinks ?? true,
+        Offline: offline,
+        Watch: !noWatch && (config.Watch ?? true),
+        RememberPosition: config.RememberPosition ?? true,
+        Scrollbar: config.Scrollbar ?? true,
+        ThemeName: customTheme is not null ? themeStr : null,
+        NamedThemes: namedThemes,
+        StartLine: startLine,
+        StartSearch: startSearch);
     if (widthArg is < 20)
     {
         Console.Error.WriteLine("readmd: --width must be at least 20 columns.");
@@ -479,6 +525,14 @@ static async Task<int> RunTerminalAsync(string file, bool dark, DiagramTheme the
         Hyperlinks = prefs.Hyperlinks,
         WheelLines = prefs.WheelLines,
         ConfirmExternalLinks = prefs.ConfirmExternalLinks,
+        AllowNetwork = !prefs.Offline,
+        Watch = prefs.Watch,
+        RememberPosition = prefs.RememberPosition,
+        Scrollbar = prefs.Scrollbar,
+        ThemeName = prefs.ThemeName,
+        NamedThemes = prefs.NamedThemes,
+        StartLine = prefs.StartLine,
+        StartSearch = prefs.StartSearch,
         DiagramTheme = theme,
         SolidBackground = solidBackground,
         Theme = customTheme,
@@ -490,6 +544,23 @@ static async Task<int> RunTerminalAsync(string file, bool dark, DiagramTheme the
             sideServer ??= new WebViewerServer(new WebViewerOptions { FilePath = path, Port = 0, Theme = theme }, diagrams);
             await sideServer.StartAsync();
             OpenBrowser(sideServer.Url);
+        },
+        Export = async (source, target) =>
+        {
+            // Same exporters as --export: .pdf via headless Chromium, anything else as standalone HTML.
+            try
+            {
+                var html = await HtmlExporter.ExportAsync(source, diagrams, theme);
+                if (Path.GetExtension(target).Equals(".pdf", StringComparison.OrdinalIgnoreCase))
+                {
+                    var prov = PdfProvisioning.EnsureInstalled(_ => { });
+                    if (!prov.IsReady) return prov.Message + (prov.Readiness == PdfReadiness.NodeMissing ? " Install Node.js, then run `readmd install-pdf`." : "");
+                    await File.WriteAllBytesAsync(target, await PdfRenderer.RenderAsync(html));
+                }
+                else await File.WriteAllTextAsync(target, html);
+                return null;
+            }
+            catch (Exception ex) { return ex.Message; }
         },
     }, diagrams);
 
@@ -530,4 +601,7 @@ internal sealed class PrintVersionAction(string version) : SynchronousCommandLin
 internal sealed record LayoutSettings(int MaxWidth, bool LineNumbers, int TabSize, bool SmartPunctuation);
 
 /// <summary>Interactive-viewer preferences resolved from flags + config.</summary>
-internal sealed record ViewerPrefs(bool ThemeAuto, bool GraphicsAuto, Readmd.Terminal.ColorMode Colors, bool Hyperlinks, int WheelLines, bool ConfirmExternalLinks);
+internal sealed record ViewerPrefs(
+    bool ThemeAuto, bool GraphicsAuto, Readmd.Terminal.ColorMode Colors, bool Hyperlinks, int WheelLines, bool ConfirmExternalLinks,
+    bool Offline, bool Watch, bool RememberPosition, bool Scrollbar, string? ThemeName,
+    IReadOnlyDictionary<string, Readmd.Terminal.TerminalTheme> NamedThemes, int? StartLine, string? StartSearch);

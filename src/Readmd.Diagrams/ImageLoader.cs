@@ -17,10 +17,16 @@ public sealed class ImageLoader : IAsyncDisposable
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(15) };
     private readonly string _rootDirectory;
 
+    /// <summary>Fetch http(s) images. When false (offline mode) remote images report a short notice instead.</summary>
+    public bool AllowRemote { get; set; } = true;
+
+    /// <summary>Largest remote image that will be downloaded (bytes); larger ones are refused.</summary>
+    public long MaxRemoteBytes { get; set; } = 10 * 1024 * 1024;
+
     public ImageLoader(string rootDirectory)
     {
         _rootDirectory = Path.GetFullPath(rootDirectory);
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("readmd/0.1");
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd("readmd/1.0");
     }
 
     public static string KeyFor(string url) => "img-" + Hashing.Sha256Hex(url)[..16];
@@ -132,11 +138,26 @@ public sealed class ImageLoader : IAsyncDisposable
             bool isSvg;
             if (IsRemote(url))
             {
-                using var resp = await _http.GetAsync(url, ct);
+                if (!AllowRemote) return DiagramResult.Fail(key, "Remote image not fetched (offline mode)");
+                using var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
                 resp.EnsureSuccessStatusCode();
-                raw = await resp.Content.ReadAsByteArrayAsync(ct);
+                if (resp.Content.Headers.ContentLength is { } len && len > MaxRemoteBytes)
+                    return DiagramResult.Fail(key, $"Remote image too large ({len / 1024 / 1024} MB; limit {MaxRemoteBytes / 1024 / 1024} MB)");
+                // Stream with a hard cap so a server that lies about (or omits) Content-Length can't
+                // make us buffer gigabytes.
+                await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+                using var ms = new MemoryStream();
+                var buffer = new byte[64 * 1024];
+                int read;
+                while ((read = await stream.ReadAsync(buffer, ct)) > 0)
+                {
+                    ms.Write(buffer, 0, read);
+                    if (ms.Length > MaxRemoteBytes) return DiagramResult.Fail(key, $"Remote image too large (limit {MaxRemoteBytes / 1024 / 1024} MB)");
+                }
+                raw = ms.ToArray();
                 isSvg = (resp.Content.Headers.ContentType?.MediaType?.Contains("svg") ?? false)
-                        || url.EndsWith(".svg", StringComparison.OrdinalIgnoreCase);
+                        || url.EndsWith(".svg", StringComparison.OrdinalIgnoreCase)
+                        || LooksLikeSvg(raw);
             }
             else
             {
@@ -220,6 +241,16 @@ public sealed class ImageLoader : IAsyncDisposable
     private static bool IsRemote(string url) =>
         url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
         url.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Sniffs an SVG document by content (servers often label SVGs as text/plain or octet-stream).</summary>
+    private static bool LooksLikeSvg(byte[] raw)
+    {
+        int n = Math.Min(raw.Length, 512);
+        if (n == 0) return false;
+        var head = System.Text.Encoding.UTF8.GetString(raw, 0, n).TrimStart('\uFEFF', ' ', '\t', '\r', '\n');
+        return head.StartsWith("<svg", StringComparison.OrdinalIgnoreCase)
+            || (head.StartsWith("<?xml", StringComparison.OrdinalIgnoreCase) && head.Contains("<svg", StringComparison.OrdinalIgnoreCase));
+    }
 
     public ValueTask DisposeAsync()
     {
