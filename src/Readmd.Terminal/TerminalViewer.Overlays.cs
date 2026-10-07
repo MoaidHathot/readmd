@@ -172,6 +172,22 @@ public sealed partial class TerminalViewer
     // action appears here (a test enforces it); the layout adapts to 1–3 columns and scrolls when
     // the terminal is too short, so nothing is ever silently cut off.
     private int _helpScroll;
+    private int _helpPage;   // 0 = keybindings, 1 = : commands
+
+    /// <summary>The `:` commands grouped for the help overlay's second page: ":name args" / "description (aliases)".</summary>
+    private static (string Heading, (string Keys, string Desc)[] Items)[] CommandSections()
+    {
+        var groups = CommandCatalog.GroupBy(c => c.Group).Select(g =>
+            (g.Key, g.Select(c =>
+            {
+                var aliases = c.Aliases.Length > 0 ? "  (" + string.Join(" ", c.Aliases.Select(a => ":" + a)) + ")" : "";
+                return (c.Syntax, c.Desc + aliases);
+            }).ToArray())).ToList();
+        // ":123" is a form, not a name — document it beside :goto.
+        var nav = groups.FindIndex(g => g.Key == "NAVIGATE");
+        if (nav >= 0) groups[nav] = (groups[nav].Key, groups[nav].Item2.Prepend((":123", "go to line 123 (slide 123 when presenting)")).ToArray());
+        return groups.ToArray();
+    }
 
     private (string Heading, (string Keys, string Desc)[] Items)[] HelpSections()
     {
@@ -242,7 +258,7 @@ public sealed partial class TerminalViewer
             {
                 (K2(EditorAction.ToggleTheme, EditorAction.ToggleBackground, "[", "]"), "cycle theme / solid background"),
                 (K(EditorAction.ToggleSelectionMode, "m"), "mark mode: drag selects, y copies"),
-                (K(EditorAction.Command, ":"), "command line (Tab completes)"),
+                (K(EditorAction.Command, ":"), "command line (:help commands)"),
                 (K(EditorAction.Slides, "Ctrl-s"), _slideMode ? "leave slides (n/p, N notes, 5gg)" : "slides: present --- sections"),
                 (K2(EditorAction.Help, EditorAction.Quit, "?", "q"), "this help / quit"),
             }),
@@ -260,12 +276,33 @@ public sealed partial class TerminalViewer
     private enum HelpRowKind { Heading, Item, Blank }
     private readonly record struct HelpRow(HelpRowKind Kind, string Keys, string Desc, int CapW);
 
-    /// <summary>Flattens a section into rows (heading, items, trailing blank) with the section's key-column width.</summary>
-    private static List<HelpRow> HelpRowsOf((string Heading, (string Keys, string Desc)[] Items) s)
+    /// <summary>
+    /// Flattens a section into rows (heading, items, trailing blank) with the section's key-column
+    /// width. A description wider than the column wraps onto continuation rows (empty key cell)
+    /// rather than being clipped.
+    /// </summary>
+    private static List<HelpRow> HelpRowsOf((string Heading, (string Keys, string Desc)[] Items) s, int width)
     {
         int capW = s.Items.Max(it => TextWidth.Of(it.Keys) + 2);
         var rows = new List<HelpRow> { new(HelpRowKind.Heading, s.Heading, "", capW) };
-        foreach (var (keys, desc) in s.Items) rows.Add(new HelpRow(HelpRowKind.Item, keys, desc, capW));
+        int room = Math.Max(8, width - capW - 3);
+        foreach (var (keys, desc) in s.Items)
+        {
+            if (TextWidth.Of(desc) <= room) { rows.Add(new HelpRow(HelpRowKind.Item, keys, desc, capW)); continue; }
+            var line = new StringBuilder();
+            string k = keys;
+            foreach (var word in desc.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (line.Length > 0 && TextWidth.Of(line.ToString()) + 1 + TextWidth.Of(word) > room)
+                {
+                    rows.Add(new HelpRow(HelpRowKind.Item, k, line.ToString(), capW));
+                    line.Clear(); k = "";
+                }
+                if (line.Length > 0) line.Append(' ');
+                line.Append(word);
+            }
+            if (line.Length > 0) rows.Add(new HelpRow(HelpRowKind.Item, k, line.ToString(), capW));
+        }
         rows.Add(new HelpRow(HelpRowKind.Blank, "", "", capW));
         return rows;
     }
@@ -283,7 +320,7 @@ public sealed partial class TerminalViewer
     /// </summary>
     private (List<List<HelpRow>> Columns, List<int> Widths, int Rows) HelpLayout(int availableWidth)
     {
-        var sections = HelpSections();
+        var sections = _helpPage == 1 ? CommandSections() : HelpSections();
         const int gap = 3;
         for (int cols = 3; cols >= 1; cols--)
         {
@@ -303,7 +340,7 @@ public sealed partial class TerminalViewer
             if (total <= availableWidth || cols == 1)
             {
                 if (cols == 1) widths[0] = Math.Min(widths[0], availableWidth);
-                var rowLists = columns.Select(col => col.SelectMany(HelpRowsOf).ToList()).ToList();
+                var rowLists = columns.Select((col, i) => col.SelectMany(s => HelpRowsOf(s, widths[i])).ToList()).ToList();
                 foreach (var rl in rowLists) if (rl.Count > 0 && rl[^1].Kind == HelpRowKind.Blank) rl.RemoveAt(rl.Count - 1);
                 return (rowLists, widths, rowLists.Max(r => r.Count));
             }
@@ -336,17 +373,19 @@ public sealed partial class TerminalViewer
         _helpScroll = Math.Clamp(_helpScroll, 0, maxScroll);
         bool scrolls = maxScroll > 0;
 
+        string other = _helpPage == 1 ? "Tab: keys" : "Tab: commands";
         string footer;
         if (scrolls)
         {
             string up = _helpScroll > 0 ? "▴ " : "  ", down = _helpScroll < maxScroll ? " ▾" : "  ";
             string pos = $"{_helpScroll + 1}–{Math.Min(totalRows, _helpScroll + bodyHeight)}/{totalRows}";
-            footer = $"{up}j/k scroll · Space/b page · esc closes   {pos}{down}";
-            if (TextWidth.Of(footer) > cW) footer = $"{up}j/k · Space/b · esc   {pos}{down}";   // narrow card
+            footer = $"{up}j/k scroll · Space/b page · {other} · esc closes   {pos}{down}";
+            if (TextWidth.Of(footer) > cW) footer = $"{up}j/k · {other} · esc   {pos}{down}";   // narrow card
         }
-        else footer = "esc  or  any key to close";
+        else footer = $"{other}  ·  esc or any other key closes";
         if (Glyphs.Ascii) footer = footer.Replace("▴", "^").Replace("▾", "v").Replace("·", "-");
-        DrawHeaderFooter(p, cTop, cLeft, cW, cH, "Keybindings" + (_slideMode ? "  ·  slides" : ""), footer);
+        string title = _helpPage == 1 ? "Commands  —  type : then the name (Tab completes)" : "Keybindings" + (_slideMode ? "  ·  slides" : "");
+        DrawHeaderFooter(p, cTop, cLeft, cW, cH, TextWidth.TrimToWidth(title, cW - 2), footer);
 
         int left = cLeft + padX;
         for (int i = 0; i < columns.Count; i++)
@@ -380,7 +419,7 @@ public sealed partial class TerminalViewer
                 }
                 case HelpRowKind.Item:
                 {
-                    int used = WriteKey(p, row.Keys);
+                    int used = row.Keys.Length == 0 ? 0 : WriteKey(p, row.Keys);   // continuation rows have no key chip
                     _screen.SetBackground(p.Panel).Write(new string(' ', Math.Max(0, row.CapW - used)));
                     _screen.Write("   ");
                     int descRoom = width - row.CapW - 3;
@@ -405,6 +444,7 @@ public sealed partial class TerminalViewer
         void Scroll(int delta) { _helpScroll = Math.Clamp(_helpScroll + delta, 0, maxScroll); _dirty = true; }
         switch (key.Kind)
         {
+            case KeyKind.Tab: _helpPage = _helpPage == 0 ? 1 : 0; _helpScroll = 0; _dirty = true; return;
             case KeyKind.Down or KeyKind.MouseScrollDown: Scroll(key.Kind == KeyKind.Down ? 1 : 3); return;
             case KeyKind.Up or KeyKind.MouseScrollUp: Scroll(key.Kind == KeyKind.Up ? -1 : -3); return;
             case KeyKind.PageDown: Scroll(page); return;
@@ -431,6 +471,7 @@ public sealed partial class TerminalViewer
         // Esc, q, ?, Enter, a click — or any other key — dismisses the overlay.
         _helpMode = false;
         _helpScroll = 0;
+        _helpPage = 0;
         _dirty = true;
     }
     private static string LetterSpace(string s)
@@ -654,6 +695,7 @@ public sealed partial class TerminalViewer
         HelpSections().SelectMany(s => s.Items.Select(it => it.Keys + "\t" + it.Desc));
 
     internal bool InHelpMode => _helpMode;
+    internal int HelpPage => _helpPage;
 
     /// <summary>Headless: simulates a terminal resize followed by the debounced reflow.</summary>
     internal void Resize(int width, int height)

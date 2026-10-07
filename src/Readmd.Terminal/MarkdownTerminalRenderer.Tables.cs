@@ -6,7 +6,17 @@ namespace Readmd.Terminal;
 
 public sealed partial class MarkdownTerminalRenderer
 {
+    /// <summary>&gt; 0 while a pipe/grid table's cells are being converted (code spans un-escape "\|").</summary>
+    private int _tableDepth;
+
     private void RenderTable(Table table, int indent)
+    {
+        _tableDepth++;
+        try { RenderTableCore(table, indent); }
+        finally { _tableDepth--; }
+    }
+
+    private void RenderTableCore(Table table, int indent)
     {
         EnsureBlankBefore();
 

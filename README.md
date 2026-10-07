@@ -169,11 +169,30 @@ Vim-style motions are supported throughout (with count prefixes: `5j`, `12gg`), 
 | `s` | Diagram: toggle image ↔ source | `v` | Focus an image (zoom/pan, `n`/`p` next/prev, `o` app, `b` browser) |
 | `[` | Cycle themes (`themeCycle` in config, else all) | `]` | Toggle solid / transparent background |
 | `o` | Open in browser | `m` | Mark mode: drag to select; `y`, `Enter` or right-click copies |
-| `r` | Re-render | `:` | Command line (`:q`, `:e file`, `:123`, `:export out.pdf`, `:set width=100`, `:theme nord`, `:marks`, `:slides`, …) |
+| `r` | Re-render | `:` | Command line — `Tab` completes, `:help commands` lists everything (see below) |
 | `T` | TOC sidebar (click an entry to jump) | `e` | Export to HTML/PDF next to the file |
 | `M` + letter / `'` + letter | Set / jump to a bookmark (`''` = back to where you jumped from) | `W` / `Alt+f` | Pause live reload / follow mode (jump to the end on every change) |
 | `Ctrl+S` | Slides on/off (in slides: `n`/`p`/`Space`/arrows move, `N` notes, `5gg` slide 5, `:3` slide 3) | | |
-| `?` | Keybindings overlay (scrolls with `j`/`k` when the terminal is short) | `q` (or `Ctrl+C`) | Quit |
+| `?` | Keybindings overlay (scrolls with `j`/`k`; `Tab` flips to the command list) | `q` (or `Ctrl+C`) | Quit |
+
+#### `:` commands
+
+Press `:` and type a command; `Tab` completes names and aliases, `↑`/`↓` recall history, and
+`:help commands` (or `Tab` inside `?`) shows this list in the viewer.
+
+| Command | Does |
+| --- | --- |
+| `:123`, `:goto <line \| mark>` (`:g`) | Go to a source line (slide 123 when presenting) or a bookmark |
+| `:toc`, `:bookmark a` (`:mark`, `:m`), `:marks`, `:nohlsearch` (`:noh`) | Contents overlay · set / list bookmarks · clear search highlights |
+| `:e <file[#section] \| url>` (`:edit`, `:open`, `:o`), `:reload` (`:r`) | Open a file relative to this one (optionally at a section) or a URL · re-read from disk |
+| `:watch`, `:nowatch`, `:follow` (`:tail`) | Live reload on / off · follow mode (jump to the end on every change) |
+| `:export [out.html \| out.pdf]` (`:write`, `:w`), `:browser` | Export next to the document · open it in the browser |
+| `:fold` (`:zc`), `:unfold` (`:zo`), `:foldall` (`:zm`), `:unfoldall` (`:zr`) | Fold the top section / `<details>`, or everything |
+| `:copy [all]` (`:yank`, `:y`), `:source` (`:s`), `:zoom [level]` | Copy the top block or the document · diagram image ↔ source · diagram zoom (no level: reset) |
+| `:theme [name]`, `:graphics <mode>`, `:width <cols \| 0>`, `:ascii [on \| off]` | Switch theme (none: cycle) · `sixel` `kitty` `iterm2` `half-block` `none` · reading width · ASCII glyphs |
+| `:set <option>[=value]` | `theme`, `graphics`, `width`, `ascii`, `wheel`, `bg` (`solid` / `terminal`) |
+| `:slides [on \| off]` (`:present`), `:slide <N>`, `:notes` | Presentation mode · go to slide N · toggle speaker notes |
+| `:help [commands]` (`:h`), `:commands`, `:q` (`:quit`, `:exit`) | Keybindings / command list · quit |
 
 `<details>` blocks start collapsed (like GitHub); fold state survives live reloads. readmd remembers where you were in each file (and your search history) across sessions — `readmd file.md +120` or `+/pattern` overrides that, and `"rememberPosition": false` turns it off.
 

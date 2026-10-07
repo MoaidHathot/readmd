@@ -69,7 +69,8 @@ public class HelpOverlayTests
         int headings = System.Text.RegularExpressions.Regex.Matches(moveRow, @"[A-Z](?: [A-Z])+(?:   [A-Z](?: [A-Z])+)*").Count;
         Assert.True(headings >= expectedColumns, $"expected {expectedColumns} columns at {w}x{h}, heading row: {moveRow.Trim()}");
         // Nothing is truncated when it all fits; otherwise the footer says so.
-        bool fits = rows.Any(r => r.Contains("esc  or  any key to close"));
+        bool fits = rows.Any(r => r.Contains("esc or any other key closes"));
+        Assert.Contains(rows, r => r.Contains("Tab: commands"));      // the second page is advertised
         if (!fits) Assert.Contains(rows, r => r.Contains("▾"));
         else Assert.Contains(rows, r => r.Contains("this help / quit"));
     }

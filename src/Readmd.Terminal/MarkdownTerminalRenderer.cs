@@ -594,15 +594,20 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
                 break;
             }
             case CodeInline code:
-                if (TryColorChip(code.Content, out var chip))
+            {
+                // GFM: inside a table cell a pipe is written "\|" even within a code span, and the
+                // backslash is not part of the content. Markdig keeps it; GitHub drops it.
+                var content = _tableDepth > 0 ? code.Content.Replace("\\|", "|") : code.Content;
+                if (TryColorChip(content, out var chip))
                 {
                     // GitHub shows a colour swatch after `#rrggbb` / rgb() / hsl() inline code.
-                    Leaf(spans, code.Content, theme.Code, style, linkId);
+                    Leaf(spans, content, theme.Code, style, linkId);
                     spans.Add(new StyledSpan(" " + Glyphs.ColorChip, chip, style, linkId));
                     break;
                 }
-                Leaf(spans, code.Content, theme.Code, style, linkId);
+                Leaf(spans, content, theme.Code, style, linkId);
                 break;
+            }
             case MathInline math:
                 Leaf(spans, MathRenderer.ToUnicode(math.Content.ToString()), theme.Code, style, linkId);
                 break;

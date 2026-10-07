@@ -47,19 +47,77 @@ public sealed partial class TerminalViewer
         if (key.Kind == KeyKind.Char && !key.Ctrl && !key.Alt && !char.IsControl(key.Char)) { _commandText += key.Text ?? key.Char.ToString(); _dirty = true; }
     }
 
-    private static readonly string[] CommandNames =
+    /// <summary>One <c>:</c> command: its canonical name, aliases, argument syntax, description and help group.</summary>
+    internal sealed record CommandInfo(string Name, string[] Aliases, string Args, string Desc, string Group)
     {
-        "quit", "edit", "toc", "set", "nohlsearch", "export", "open", "help", "fold", "unfold", "foldall", "unfoldall",
-        "reload", "copy", "watch", "nowatch", "follow", "theme", "graphics", "width", "ascii", "wrap", "bookmark", "marks", "goto", "browser", "source", "zoom",
-        "slides", "slide", "notes",
-    };
+        public IEnumerable<string> AllNames => new[] { Name }.Concat(Aliases);
+        public string Syntax => Args.Length == 0 ? ":" + Name : $":{Name} {Args}";
+    }
 
-    private static string CompleteCommand(string text)
+    /// <summary>
+    /// Every <c>:</c> command. This single table drives dispatch (<see cref="RunCommand"/> switches
+    /// on the canonical name), Tab completion and the <c>:help commands</c> page, so the three can't
+    /// drift apart; a test checks that each entry is accepted by the dispatcher.
+    /// </summary>
+    internal static readonly CommandInfo[] CommandCatalog =
+    [
+        new("goto", ["g"], "<line | mark>", "go to a source line or bookmark", "NAVIGATE"),
+        new("toc", [], "", "open the table of contents", "NAVIGATE"),
+        new("bookmark", ["mark", "m"], "<a–z>", "set a bookmark on the top line", "NAVIGATE"),
+        new("marks", [], "", "list the bookmarks", "NAVIGATE"),
+        new("nohlsearch", ["noh"], "", "clear search highlights & selection", "NAVIGATE"),
+
+        new("edit", ["e", "open", "o"], "<file[#sec] | url>", "open a file (relative) or a URL", "FILES"),
+        new("reload", ["r"], "", "re-read the document from disk", "FILES"),
+        new("watch", [], "", "resume live reload", "FILES"),
+        new("nowatch", [], "", "pause live reload", "FILES"),
+        new("follow", ["tail"], "", "follow mode (tail the file)", "FILES"),
+        new("export", ["write", "w"], "[out.html | out.pdf]", "export next to the document", "FILES"),
+        new("browser", [], "", "open the document in the browser", "FILES"),
+
+        new("fold", ["foldclose", "zc"], "", "fold the top section or <details>", "BLOCKS"),
+        new("unfold", ["foldopen", "zo"], "", "unfold it", "BLOCKS"),
+        new("foldall", ["zm"], "", "fold every section", "BLOCKS"),
+        new("unfoldall", ["zr"], "", "unfold everything", "BLOCKS"),
+        new("copy", ["yank", "y"], "[all]", "copy the top block (all: document)", "BLOCKS"),
+        new("source", ["s"], "", "diagram: toggle image ↔ source", "BLOCKS"),
+        new("zoom", [], "[level]", "zoom diagrams to a level (none: reset)", "BLOCKS"),
+
+        new("theme", [], "[name]", "switch theme (no name: cycle)", "VIEW"),
+        new("graphics", [], "<mode>", "sixel, kitty, iterm2, half-block, none", "VIEW"),
+        new("width", [], "<columns | 0>", "reading width in columns (0 = full)", "VIEW"),
+        new("ascii", [], "[on | off]", "ASCII glyphs instead of box drawing", "VIEW"),
+        new("set", [], "<option>[=value]", "theme, graphics, width, ascii, wheel, bg", "VIEW"),
+
+        new("slides", ["present"], "[on | off]", "presentation mode (one slide per ---)", "SLIDES"),
+        new("slide", [], "<N>", "go to slide N (enters slide mode)", "SLIDES"),
+        new("notes", [], "", "toggle the speaker notes", "SLIDES"),
+
+        new("help", ["h"], "[commands]", "keybindings, or this command list", "HELP"),
+        new("commands", [], "", "this command list (= :help commands)", "HELP"),
+        new("quit", ["q", "exit"], "", "quit readmd", "HELP"),
+    ];
+
+    /// <summary>Canonical name for a typed command word (alias-aware), or null when unknown.</summary>
+    internal static string? ResolveCommand(string word)
     {
-        var word = text.Split(' ')[0];
+        foreach (var c in CommandCatalog)
+            if (c.AllNames.Contains(word, StringComparer.OrdinalIgnoreCase)) return c.Name;
+        return null;
+    }
+
+    /// <summary>Tab completion for the command word: an exact name or alias expands to the canonical command, else a unique prefix (names before aliases).</summary>
+    internal static string CompleteCommand(string text)
+    {
         if (text.Contains(' ')) return text;
-        var matches = CommandNames.Where(c => c.StartsWith(word, StringComparison.OrdinalIgnoreCase)).ToList();
-        return matches.Count == 1 ? matches[0] + " " : text;
+        var word = text;
+        if (word.Length == 0) return text;
+        if (ResolveCommand(word) is { } exact) return exact + " ";
+        var names = CommandCatalog.Select(c => c.Name).Where(n => n.StartsWith(word, StringComparison.OrdinalIgnoreCase)).Distinct().ToList();
+        if (names.Count == 1) return names[0] + " ";
+        if (names.Count > 1) return text;
+        var aliases = CommandCatalog.SelectMany(c => c.Aliases).Where(a => a.StartsWith(word, StringComparison.OrdinalIgnoreCase)).Distinct().ToList();
+        return aliases.Count == 1 ? aliases[0] + " " : text;
     }
 
     /// <summary>Executes a <c>:</c> command. Unknown commands report an error in the status bar.</summary>
@@ -76,37 +134,38 @@ public sealed partial class TerminalViewer
             if (_slideMode) GoToSlide(lineNo); else GoToSourceLine(lineNo);
             return;
         }
-        switch (name)
+        switch (ResolveCommand(name))
         {
-            case "q" or "quit" or "exit": _running = false; return;
-            case "e" or "edit" or "o" or "open":
-                if (arg.Length == 0) { SetStatus("Usage: :e <file or url>"); return; }
+            case "quit": _running = false; return;
+            case "edit":
+                if (arg.Length == 0) { SetStatus("Usage: :e <file[#section] or url>"); return; }
                 OpenTarget(arg);
                 return;
             case "toc": OpenToc(); return;
-            case "noh" or "nohlsearch": ClearSearchAndSelection(); return;
-            case "export" or "w" or "write": StartExport(arg); return;
-            case "help" or "h": _helpMode = true; _helpScroll = 0; _dirty = true; return;
-            case "fold" or "foldclose" or "zc": FoldActive(FoldOp.Close); return;
-            case "unfold" or "foldopen" or "zo": FoldActive(FoldOp.Open); return;
-            case "foldall" or "zm": FoldAll(true); return;
-            case "unfoldall" or "zr": FoldAll(false); return;
-            case "reload" or "r": _ = LoadAsync(_currentPath, pushHistory: false); SetStatus("Reloaded"); return;
-            case "copy" or "yank" or "y": if (arg == "all") YankDocument(); else YankActiveBlock(); return;
+            case "nohlsearch": ClearSearchAndSelection(); return;
+            case "export": StartExport(arg); return;
+            case "help": OpenHelp(arg.ToLowerInvariant() is "commands" or "command" or "cmd" or ":" ? 1 : 0); return;
+            case "commands": OpenHelp(1); return;
+            case "fold": FoldActive(FoldOp.Close); return;
+            case "unfold": FoldActive(FoldOp.Open); return;
+            case "foldall": FoldAll(true); return;
+            case "unfoldall": FoldAll(false); return;
+            case "reload": _ = LoadAsync(_currentPath, pushHistory: false); SetStatus("Reloaded"); return;
+            case "copy": if (arg == "all") YankDocument(); else YankActiveBlock(); return;
             case "watch": SetWatch(true); return;
             case "nowatch": SetWatch(false); return;
-            case "follow" or "tail": ToggleFollow(); return;
+            case "follow": ToggleFollow(); return;
             case "theme": SetTheme(arg); return;
             case "graphics": SetGraphics(arg); return;
             case "width": SetWidth(arg); return;
             case "ascii": SetAscii(arg is "" or "on" or "true" or "1"); return;
-            case "bookmark" or "mark" or "m": if (arg.Length == 1) SetBookmark(arg[0]); else SetStatus("Usage: :mark a"); return;
+            case "bookmark": if (arg.Length == 1) SetBookmark(arg[0]); else SetStatus("Usage: :mark a"); return;
             case "marks": ListBookmarks(); return;
-            case "goto" or "g": if (int.TryParse(arg, out var n)) GoToSourceLine(n); else if (arg.Length == 1) GoBookmark(arg[0]); else SetStatus("Usage: :goto <line|mark>"); return;
+            case "goto": if (int.TryParse(arg, out var n)) GoToSourceLine(n); else if (arg.Length == 1) GoBookmark(arg[0]); else SetStatus("Usage: :goto <line|mark>"); return;
             case "browser": OpenInBrowser(); return;
-            case "source" or "s": ToggleDiagramSource(); return;
+            case "source": ToggleDiagramSource(); return;
             case "zoom": if (int.TryParse(arg, out var z)) { ZoomDiagrams(z - _diagramZoom); } else ResetZoom(); return;
-            case "slides" or "present": if (arg is "off" or "0") { if (_slideMode) ExitSlides(); } else if (arg is "on" or "1") { if (!_slideMode) EnterSlides(); } else ToggleSlides(); return;
+            case "slides": if (arg is "off" or "0") { if (_slideMode) ExitSlides(); } else if (arg is "on" or "1") { if (!_slideMode) EnterSlides(); } else ToggleSlides(); return;
             case "slide": if (!_slideMode) EnterSlides(); if (int.TryParse(arg, out var sn)) GoToSlide(sn); return;
             case "notes": if (_slideMode) { _showNotes = !_showNotes; _dirty = true; } else SetStatus("Notes are shown in slide mode (:slides)"); return;
             case "set":
@@ -128,9 +187,18 @@ public sealed partial class TerminalViewer
                 }
             }
             default:
-                SetStatus("Unknown command: " + command + "  (:help)");
+                SetStatus("Unknown command: " + command + "  (:help commands lists them)");
                 return;
         }
+    }
+
+    /// <summary>Opens the help overlay on a page: 0 = keybindings, 1 = commands.</summary>
+    private void OpenHelp(int page)
+    {
+        _helpMode = true;
+        _helpPage = page;
+        _helpScroll = 0;
+        _dirty = true;
     }
 
     private void GoToSourceLine(int sourceLine)

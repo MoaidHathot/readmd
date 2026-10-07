@@ -29,6 +29,17 @@ public class MarkdownFidelityTests
     }
 
     [Fact]
+    public void Escaped_pipes_inside_table_code_spans_lose_the_backslash_like_github()
+    {
+        var text = DocumentTextRenderer.Render("| Command | Does |\n|---|---|\n| `:slides [on \\| off]` | a \\| b |\n", dark: true, width: 80, color: false);
+        Assert.Contains(":slides [on | off]", text);
+        Assert.Contains("a | b", text);
+        Assert.DoesNotContain("\\|", text);
+        // Outside tables a code span keeps its backslash: `a \| b` really contains one.
+        Assert.Contains("a \\| b", DocumentTextRenderer.Render("`a \\| b`", dark: true, width: 80, color: false));
+    }
+
+    [Fact]
     public void Superscript_and_subscript_letters_convert_when_unicode_has_them()
     {
         var text = DocumentTextRenderer.Render("x^th^ a~ij~ <sup>sup</sup> <sub>b</sub> 2^10^", dark: true, width: 80, color: false).Trim();
