@@ -100,21 +100,28 @@ available, use **Print to PDF** in the browser instead (the OS print dialog).
 
 ### Terminal keybindings
 
-Vim-style motions are supported throughout, plus the mouse wheel scrolls.
+Vim-style motions are supported throughout (with count prefixes: `5j`, `12gg`), plus the mouse wheel scrolls. Block-level actions act on the block at the **top of the screen** — scroll it there, then `y`/`za`/`s`.
 
 | Key | Action | Key | Action |
 | --- | --- | --- | --- |
 | `j` / `k` (or arrows) | Scroll one line | mouse wheel | Scroll |
-| `Ctrl` + mouse wheel | Zoom diagrams in / out | `/` | Search |
-| `Ctrl+e` / `Ctrl+y` | Scroll one line (vim) | `n` / `N` | Next / previous match |
-| `Ctrl+d` / `Ctrl+u` | Half page | `←` / `→` (or `Backspace`) | Back / forward (history) |
-| `Ctrl+f` / `Ctrl+b` | Full page | `t` | Table-of-contents overlay |
-| `Space` / `b` | Page down / up | `Enter`, `1`–`9` | Follow a link (first visible / link #n by its superscript) |
-| `gg` / `G` | Top / bottom | click / `Ctrl`+click | Follow a link (Ctrl skips the confirm) |
-| `Home` / `End` | Top / bottom | `[` | Toggle light / dark theme |
-| `o` | Open in browser | `]` | Toggle solid / transparent background |
-| `m` | Mark mode (select + copy) | `q` (or `Ctrl+C`) | Quit |
-| `?` | Keybindings overlay | | |
+| `Ctrl+d` / `Ctrl+u` | Half page | `Ctrl+f` / `Ctrl+b`, `Space` / `b` | Full page |
+| `gg` / `G`, `Home` / `End` | Top / bottom | `]]` / `[[` | Next / previous heading |
+| `}` / `{` | Next / previous block | `]c` `[c` · `]i` `[i` | Next / prev code block · image |
+| `/` | Search (live; `Ctrl+r` regex, `Ctrl+i` case, `↑`/`↓` history) | `n` / `N` | Next / previous match |
+| `t` | Table of contents (type to filter) | `Esc` | Clear search / selection |
+| `f` | **Link hints**: label every visible link, type a label to open | `F` | Link hints: copy the URL |
+| `Tab` / `Shift+Tab`, `Enter` | Cycle visible links / open the active (or first) one | `←` / `→` (or `Backspace`) | Back / forward (history, scroll restored) |
+| click / `Ctrl`+click | Follow a link (Ctrl skips the confirm) | `Ctrl` + mouse wheel, `+` / `-` | Zoom diagrams in / out |
+| `y` | Copy the top block (code without gutter, diagram source, table as text) | `Y` | Copy the whole document source |
+| `za` / `zc` / `zo` | Fold toggle / close / open the top section or `<details>` | `zM` / `zR` | Fold / unfold everything |
+| `s` | Diagram: toggle image ↔ source | `v` | Focus an image (zoom/pan, `n`/`p` next/prev, `o` app, `b` browser) |
+| `[` | Cycle theme (custom → dark → light) | `]` | Toggle solid / transparent background |
+| `o` | Open in browser | `m` | Mark mode (select + copy) |
+| `r` | Re-render | `:` | Command line |
+| `?` | Keybindings overlay | `q` (or `Ctrl+C`) | Quit |
+
+`<details>` blocks start collapsed (like GitHub); fold state survives live reloads.
 
 On Windows, mouse-wheel scrolling captures the mouse, which disables the terminal's native
 click-drag text selection. Press `m` to enter **mark mode** (the status bar shows `[SELECT]`):
@@ -171,19 +178,24 @@ ignored.
     }
   },
 
-  // Remap the common single-key actions (others keep their defaults):
+  // Remap actions to chords: a key, "ctrl+x" / "alt+x" / "shift+tab", a sequence ("gg", "]]"),
+  // or a list of several; the defaults for that action are replaced.
   "keys": {
-    "quit": "x",
+    "quit": ["x", "ctrl+q"],
     "search": "s",
     "pagedown": "space"
   }
 }
 ```
 
-Remappable actions: `quit`, `scrollDown`, `scrollUp`, `pageDown`, `pageUp`,
-`goBottom`, `search`, `searchNext`, `searchPrev`, `toc`, `openInBrowser`,
-`selectionMode`, `rerender`, `toggleTheme`, `toggleBackground`, `help`. (Arrows,
-mouse, `Ctrl`-combinations, the `gg` prefix, and `1`–`9` link-following are fixed.)
+Remappable actions: `quit`, `scrollDown`, `scrollUp`, `halfPageDown`, `halfPageUp`, `pageDown`,
+`pageUp`, `goTop`, `goBottom`, `search`, `searchNext`, `searchPrev`, `clearSearch`, `toc`,
+`tocSidebar`, `back`, `forward`, `followLink`, `linkHints`, `nextLink`, `prevLink`, `copyLinkUrl`,
+`openInBrowser`, `viewImage`, `selectionMode`, `rerender`, `toggleTheme`, `toggleBackground`,
+`help`, `nextHeading`, `prevHeading`, `nextBlock`, `prevBlock`, `nextCode`, `prevCode`,
+`nextImage`, `prevImage`, `yank`, `yankAll`, `foldToggle`, `foldClose`, `foldOpen`, `foldAll`,
+`unfoldAll`, `toggleDiagramSource`, `command`, `export`, `quickOpen`, `projectSearch`, `zoomIn`,
+`zoomOut`, `zoomReset`. (Mouse buttons and digit count prefixes are fixed.)
 
 ### Shell completions & man page
 

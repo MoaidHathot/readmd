@@ -11,7 +11,7 @@ namespace Readmd.Terminal;
 // model as the browser — not HTML — so we emulate CSS (radius/shadow/keycaps) with Unicode + truecolor.
 public sealed partial class TerminalViewer
 {
-    // ---- palette mirrored from src/Readmd.Web/assets/app.css :root variables ----
+    // ---- palette derived from the active theme (so custom themes recolour overlays too) ----
     private readonly record struct OverlayPalette(
         Rgb PageBg,       // --bg
         Rgb Panel,        // --bg-elev (card)
@@ -29,36 +29,21 @@ public sealed partial class TerminalViewer
 
     private OverlayPalette Palette()
     {
-        if (_theme.IsDark)
-            return new OverlayPalette(
-                PageBg: Rgb.FromHex("#0d1117"),
-                Panel: Rgb.FromHex("#161b22"),
-                PanelAlt: Rgb.FromHex("#1b212b"),
-                Border: Rgb.FromHex("#30363d"),
-                Fg: Rgb.FromHex("#e6edf3"),
-                Muted: Rgb.FromHex("#9da7b3"),
-                Link: Rgb.FromHex("#58a6ff"),
-                Accent: Rgb.FromHex("#1f6feb"),
-                KeyBg: Rgb.FromHex("#0d1117"),
-                KeyBorder: Rgb.FromHex("#30363d"),
-                KeyFg: Rgb.FromHex("#58a6ff"),
-                SelBg: Rgb.FromHex("#1f6feb"),
-                SelFg: Rgb.FromHex("#ffffff"));
-
+        var t = _theme;
         return new OverlayPalette(
-            PageBg: Rgb.FromHex("#ffffff"),
-            Panel: Rgb.FromHex("#f6f8fa"),
-            PanelAlt: Rgb.FromHex("#eef1f4"),
-            Border: Rgb.FromHex("#d0d7de"),
-            Fg: Rgb.FromHex("#1f2328"),
-            Muted: Rgb.FromHex("#636c76"),
-            Link: Rgb.FromHex("#0969da"),
-            Accent: Rgb.FromHex("#0969da"),
-            KeyBg: Rgb.FromHex("#ffffff"),
-            KeyBorder: Rgb.FromHex("#d0d7de"),
-            KeyFg: Rgb.FromHex("#0969da"),
-            SelBg: Rgb.FromHex("#0969da"),
-            SelFg: Rgb.FromHex("#ffffff"));
+            PageBg: t.Background,
+            Panel: t.BackgroundElevated,
+            PanelAlt: t.IsDark ? t.BackgroundElevated.Lighten(0.03) : t.BackgroundElevated.Darken(0.03),
+            Border: t.Rule,
+            Fg: t.Text,
+            Muted: t.Muted,
+            Link: t.Link,
+            Accent: t.Heading,
+            KeyBg: t.Background,
+            KeyBorder: t.Rule,
+            KeyFg: t.Link,
+            SelBg: t.SelectionBackground,
+            SelFg: t.SelectionForeground);
     }
 
     // =====================================================================================
@@ -66,13 +51,12 @@ public sealed partial class TerminalViewer
     // =====================================================================================
     private void DrawScrim(OverlayPalette p)
     {
-        // Pull content toward black like the browser's translucent black scrim.
-        var scrim = p.PageBg.Darken(_theme.IsDark ? 0.5 : 0.0).Mix(new Rgb(0, 0, 0), _theme.IsDark ? 0.0 : 0.45);
-        if (!_theme.IsDark) scrim = p.PageBg.Mix(new Rgb(0, 0, 0), 0.42);
-        else scrim = p.PageBg.Darken(0.5);
+        var scrim = _theme.IsDark ? p.PageBg.Darken(0.5) : p.PageBg.Mix(new Rgb(0, 0, 0), 0.42);
         double dim = _theme.IsDark ? 0.72 : 0.55;
+        _scrimBgCache = scrim;
 
         int height = ViewportHeight;
+        int offset = ContentOffset;
         for (int row = 0; row < _screen.Height; row++)
         {
             _screen.MoveTo(row, 0).SetBackground(scrim).ClearLineToEnd();
@@ -82,18 +66,19 @@ public sealed partial class TerminalViewer
             var line = _lines[lineIndex];
             if (line.DiagramKey is not null) continue;
 
-            _screen.MoveTo(row, 0);
-            int col = 0, width = _screen.Width;
+            _screen.MoveTo(row, offset);
+            int col = 0, width = _screen.Width - offset;
             var lineBg = line.LineBackground is { } lb ? lb.Mix(scrim, dim) : scrim;
             foreach (var span in line.Spans)
             {
                 if (col >= width) break;
                 var text = span.Text;
-                if (col + text.Length > width) text = text[..Math.Max(0, width - col)];
+                int w = TextWidth.Of(text);
+                if (col + w > width) { text = TextWidth.TrimToWidth(text, Math.Max(0, width - col)); w = TextWidth.Of(text); }
                 if (text.Length == 0) continue;
                 var fg = (span.Color ?? _theme.Text).Mix(scrim, dim);
                 _screen.SetBackground(lineBg).SetForeground(fg).SetStyle(CellStyle.None).Write(text);
-                col += text.Length;
+                col += w;
             }
             if (col < width) _screen.SetBackground(scrim).Write(new string(' ', width - col));
         }
@@ -103,26 +88,20 @@ public sealed partial class TerminalViewer
     // =====================================================================================
     //  Card chrome — pseudo-rounded border + soft drop shadow, browser-styled
     // =====================================================================================
-    // Half-block + rounded box pieces. Rounded corners use the rounded box-drawing glyphs; the soft
-    // shadow uses a shaded block blended with the (already-dimmed) backdrop for a CSS-like blur.
     private (int Top, int Left, int Width, int Height) DrawCard(
         OverlayPalette p, int boxTop, int boxLeft, int boxW, int boxH)
     {
         int inner = boxW - 2;
 
         // --- soft drop shadow (offset down-right), drawn first so the card sits on top ---
-        // Browser: box-shadow: 0 12px 48px rgba(0,0,0,.4). We approximate with a shaded edge that
-        // fades into the dimmed backdrop using a light-shade glyph blended toward black.
         var backdrop = _scrimBgCache;
         var shadow = backdrop.Mix(new Rgb(0, 0, 0), _theme.IsDark ? 0.45 : 0.30);
-        // right edge (one column), shifted down by 1 row
         for (int i = 1; i <= boxH; i++)
         {
             int r = boxTop + i;
             if (r >= _screen.Height) break;
             _screen.MoveTo(r, boxLeft + boxW).SetBackground(backdrop).SetForeground(shadow).Write("░");
         }
-        // bottom edge (one row), shifted right by 1 col
         int sb = boxTop + boxH;
         if (sb < _screen.Height)
         {
@@ -130,7 +109,6 @@ public sealed partial class TerminalViewer
         }
 
         // --- card body: rounded corners, vertical edges, filled interior ---
-        // top border with rounded corners (painted over the dimmed scrim so the rounding reads)
         _screen.SetBackground(_scrimBgCache).SetForeground(p.Border);
         _screen.MoveTo(boxTop, boxLeft).Write("╭");
         _screen.SetForeground(p.Border).Write(new string('─', inner));
@@ -156,24 +134,23 @@ public sealed partial class TerminalViewer
     /// <summary>Draws the header bar (accent title + divider) and footer bar (divider + hint) inside the card.</summary>
     private void DrawHeaderFooter(OverlayPalette p, int cTop, int cLeft, int cW, int cH, string title, string footer)
     {
-        // Header: title row + a divider line beneath it.
         _screen.MoveTo(cTop, cLeft).SetBackground(p.Panel).SetForeground(p.Accent).SetStyle(CellStyle.Bold);
-        string ttl = " " + title;
-        if (ttl.Length > cW) ttl = ttl[..cW];
+        string ttl = TextWidth.TrimToWidth(" " + title, cW);
         _screen.Write(ttl);
         _screen.SetStyle(CellStyle.None).SetBackground(p.Panel);
-        if (ttl.Length < cW) _screen.Write(new string(' ', cW - ttl.Length));
+        int tw = TextWidth.Of(ttl);
+        if (tw < cW) _screen.Write(new string(' ', cW - tw));
 
         _screen.MoveTo(cTop + 1, cLeft).SetBackground(p.Panel).SetForeground(p.Border).Write(new string('─', cW));
 
-        // Footer: divider + centered muted hint on the last interior row.
         int divRow = cTop + cH - 2;
         int footRow = cTop + cH - 1;
         _screen.MoveTo(divRow, cLeft).SetBackground(p.Panel).SetForeground(p.Border).Write(new string('─', cW));
         _screen.MoveTo(footRow, cLeft).SetBackground(p.Panel).Write(new string(' ', cW));
         if (!string.IsNullOrEmpty(footer))
         {
-            int fl = VisibleWidth(footer);
+            footer = TextWidth.TrimToWidth(footer, cW);
+            int fl = TextWidth.Of(footer);
             int fcol = cLeft + Math.Max(0, (cW - fl) / 2);
             _screen.MoveTo(footRow, fcol).SetBackground(p.Panel).SetForeground(p.Muted).Write(footer);
         }
@@ -182,22 +159,10 @@ public sealed partial class TerminalViewer
     /// <summary>Writes a raised "kbd" key cap (browser-like keycap) and returns columns consumed.</summary>
     private int WriteKey(OverlayPalette p, string key)
     {
-        // Browser kbd: background var(--bg) on a var(--bg-elev) panel, var(--border) outline,
-        // var(--link) text. We mirror that: the keycap background is the PAGE bg (a step off the
-        // panel) so each cap reads as a distinct chip, with link-colored bold text.
         _screen.SetBackground(p.KeyBg).SetForeground(p.KeyFg).SetStyle(CellStyle.Bold);
         _screen.Write(" " + key + " ");
         _screen.SetStyle(CellStyle.None).SetBackground(p.Panel);
-        return key.Length + 2;
-    }
-
-    private static int VisibleWidth(string s)
-    {
-        int w = 0;
-        foreach (var ch in s)
-            w += ch >= 0x1100 && (ch <= 0x115F || (ch >= 0x2E80 && ch <= 0xA4CF) ||
-                (ch >= 0xAC00 && ch <= 0xD7A3) || (ch >= 0xF900 && ch <= 0xFAFF) || (ch >= 0xFF00 && ch <= 0xFF60)) ? 2 : 1;
-        return w;
+        return TextWidth.Of(key) + 2;
     }
 
     // =====================================================================================
@@ -208,39 +173,46 @@ public sealed partial class TerminalViewer
     {
         var k = _keyMap;
         string K(EditorAction a, string dflt) => k.Label(a, dflt);
+        string K2(EditorAction a, EditorAction b, string da, string db) => $"{K(a, da)}  {K(b, db)}";
         return
         [
             ("MOVE", new[]
             {
-                ($"{K(EditorAction.ScrollDown, "j")}  {K(EditorAction.ScrollUp, "k")}", "line down / up (or arrows)"),
-                ("Ctrl-d  Ctrl-u", "half page"),
-                ($"Ctrl-f  {K(EditorAction.PageDown, "space")}  /  Ctrl-b  {K(EditorAction.PageUp, "b")}", "page down / up"),
-                ("gg  G", "top / bottom (Home / End)"),
-                ("wheel", "scroll"),
+                (K2(EditorAction.ScrollDown, EditorAction.ScrollUp, "j", "k"), "line down / up (count: 5j)"),
+                ("Ctrl-d  Ctrl-u", "half page down / up"),
+                (K2(EditorAction.PageDown, EditorAction.PageUp, "Space", "b"), "page down / up (Ctrl-f / Ctrl-b)"),
+                (K2(EditorAction.GoTop, EditorAction.GoBottom, "gg", "G"), "top / bottom (12gg: line 12)"),
+                (K2(EditorAction.NextHeading, EditorAction.PrevHeading, "]]", "[["), "next / previous heading"),
+                (K2(EditorAction.NextBlock, EditorAction.PrevBlock, "}", "{"), "next / previous block"),
+                ("]c [c  ]i [i", "next / prev code block, image"),
             }),
             ("FIND & GO", new[]
             {
-                (K(EditorAction.Search, "/"), "search (type to match live)"),
-                ($"{K(EditorAction.SearchNext, "n")}  N", "next / prev match"),
-                (K(EditorAction.Toc, "t"), "table of contents"),
-                ("1-9  Enter", "follow link #n / first visible link"),
-                ("<-  ->  Bksp", "back / forward in history"),
+                (K(EditorAction.Search, "/"), "search (Ctrl-r regex, Ctrl-i case, ↑↓ history)"),
+                (K2(EditorAction.SearchNext, EditorAction.SearchPrev, "n", "N"), "next / previous match"),
+                (K(EditorAction.Toc, "t"), "table of contents (type to filter)"),
+                (K(EditorAction.LinkHints, "f"), "link hints: type a label to open"),
+                (K(EditorAction.CopyLinkUrl, "F"), "link hints: copy the URL"),
+                ($"{K(EditorAction.NextLink, "Tab")}  Enter", "cycle links / open the active one"),
+                ("←  →  Bksp", "back / forward in history"),
             }),
-            ("VIEW", new[]
+            ("BLOCK", new[]
             {
-                (K(EditorAction.ToggleTheme, "["), "cycle theme"),
-                (K(EditorAction.ToggleBackground, "]"), "toggle solid background"),
-                ("Ctrl-wheel", "zoom diagrams"),
-                ("Ctrl-0", "reset zoom"),
-                (K(EditorAction.Rerender, "r"), "re-render / clear artifacts"),
+                (K(EditorAction.Yank, "y"), "copy the top block (code w/o gutter, diagram source)"),
+                (K(EditorAction.YankAll, "Y"), "copy the whole document source"),
+                ("za  zc  zo", "fold toggle / close / open the top section"),
+                ("zM  zR", "fold / unfold all sections"),
+                (K(EditorAction.ToggleDiagramSource, "s"), "diagram: toggle image ↔ source"),
+                (K(EditorAction.ViewImage, "v"), "focus image (zoom/pan · n/p next · o app · b browser)"),
             }),
-            ("MORE", new[]
+            ("VIEW & MORE", new[]
             {
+                (K2(EditorAction.ToggleTheme, EditorAction.ToggleBackground, "[", "]"), "cycle theme / toggle solid background"),
+                ("+  -  Ctrl-0", "zoom diagrams in / out / reset (also Ctrl-wheel)"),
                 (K(EditorAction.ToggleSelectionMode, "m"), "mark mode (drag = select, right-click = copy)"),
-                (K(EditorAction.OpenInBrowser, "o"), "open in browser"),
-                (K(EditorAction.ViewImage, "v"), "focus image (zoom/pan · o app · b browser)"),
-                (K(EditorAction.Help, "?"), "this help"),
-                ($"{K(EditorAction.Quit, "q")}  Ctrl-c", "quit"),
+                (K2(EditorAction.OpenInBrowser, EditorAction.Export, "o", "e"), "open in browser / export html·pdf"),
+                (K2(EditorAction.Rerender, EditorAction.Command, "r", ":"), "re-render / command line"),
+                ($"{K(EditorAction.Help, "?")}  {K(EditorAction.Quit, "q")}", "this help / quit"),
             }),
         ];
     }
@@ -249,16 +221,12 @@ public sealed partial class TerminalViewer
     {
         var p = Palette();
         DrawScrim(p);
-        _scrimBgCache = _theme.IsDark ? p.PageBg.Darken(0.5) : p.PageBg.Mix(new Rgb(0, 0, 0), 0.42);
         var sections = HelpSections();
 
-        // Column natural width. Within a section every row's keycap is padded to the section's
-        // widest keycap, so the description room is (sectionCapW + 3 + desc). Size the column to the
-        // widest such row across both halves (and never narrower than the letter-spaced heading).
         int SectionWidth((string Heading, (string Keys, string Desc)[] Items) s)
         {
-            int capW = s.Items.Max(it => it.Keys.Length + 2);
-            int rows = s.Items.Max(it => capW + 3 + it.Desc.Length);
+            int capW = s.Items.Max(it => TextWidth.Of(it.Keys) + 2);
+            int rows = s.Items.Max(it => capW + 3 + TextWidth.Of(it.Desc));
             return Math.Max(LetterSpace(s.Heading).Length, rows);
         }
         int half = (sections.Length + 1) / 2;
@@ -270,13 +238,15 @@ public sealed partial class TerminalViewer
         int colW = Math.Max(Math.Max(ColW(left), ColW(right)), 22);
 
         int padX = 2, gap = 4;
-        int contentW = padX + colW + gap + colW + padX;
+        // Two columns when they fit, else one.
+        bool twoCols = padX + colW + gap + colW + padX + 2 <= _screen.Width - 4;
+        if (!twoCols) { left = sections; right = []; colW = Math.Min(colW, _screen.Width - 8); }
+        int contentW = twoCols ? padX + colW + gap + colW + padX : padX + colW + padX;
 
         int RowsFor((string Heading, (string Keys, string Desc)[] Items)[] col) =>
             col.Sum(s => 1 + s.Items.Length + 1) - (col.Length > 0 ? 1 : 0);
         int bodyRows = Math.Max(RowsFor(left), RowsFor(right));
 
-        // Card = top border + header(1) + divider(1) + padding(1) + body + padding(1) + divider(1) + footer(1) + bottom border
         int cardW = Math.Min(_screen.Width - 4, contentW + 2);
         int cardH = Math.Min(_screen.Height - 2, bodyRows + 9);
         int boxTop = Math.Max(0, (_screen.Height - cardH) / 2);
@@ -285,13 +255,12 @@ public sealed partial class TerminalViewer
         var (cTop, cLeft, cW, cH) = DrawCard(p, boxTop, boxLeft, cardW, cardH);
         DrawHeaderFooter(p, cTop, cLeft, cW, cH, "Keybindings", "esc  or  any key to close");
 
-        // Body region: between header divider (cTop+1) and footer divider (cTop+cH-2), with 1 row padding.
         int bodyTop = cTop + 3;
         int bodyLeft = cLeft + padX;
         int bodyHeight = (cTop + cH - 2) - bodyTop - 1;
 
         RenderHelpColumn(p, left, bodyTop, bodyLeft, colW, bodyHeight);
-        RenderHelpColumn(p, right, bodyTop, bodyLeft + colW + gap, colW, bodyHeight);
+        if (twoCols) RenderHelpColumn(p, right, bodyTop, bodyLeft + colW + gap, colW, bodyHeight);
         _screen.Reset();
     }
 
@@ -303,16 +272,14 @@ public sealed partial class TerminalViewer
         foreach (var (heading, items) in col)
         {
             if (row >= endRow) break;
-            // Section heading: uppercase, accent, letter-spaced (insert a space between letters).
             _screen.MoveTo(row, left).SetBackground(p.Panel).SetForeground(p.Accent).SetStyle(CellStyle.Bold);
-            string h = LetterSpace(heading);
-            if (h.Length > width) h = h[..width];
+            string h = TextWidth.TrimToWidth(LetterSpace(heading), width);
             _screen.Write(h);
             _screen.SetStyle(CellStyle.None).SetBackground(p.Panel);
             if (h.Length < width) _screen.Write(new string(' ', width - h.Length));
             row++;
 
-            int capW = items.Max(it => it.Keys.Length + 2);
+            int capW = items.Max(it => TextWidth.Of(it.Keys) + 2);
             foreach (var (keys, desc) in items)
             {
                 if (row >= endRow) break;
@@ -321,9 +288,9 @@ public sealed partial class TerminalViewer
                 _screen.SetBackground(p.Panel).Write(new string(' ', Math.Max(0, capW - used)));
                 _screen.Write("   ");
                 int descRoom = width - capW - 3;
-                string d = desc.Length > descRoom && descRoom > 1 ? desc[..descRoom] : desc;
+                string d = TextWidth.TrimToWidth(desc, Math.Max(1, descRoom));
                 _screen.SetForeground(p.Muted).Write(d);
-                int written = capW + 3 + d.Length;
+                int written = capW + 3 + TextWidth.Of(d);
                 if (written < width) _screen.SetBackground(p.Panel).Write(new string(' ', width - written));
                 row++;
             }
@@ -344,104 +311,271 @@ public sealed partial class TerminalViewer
     // =====================================================================================
     //  TOC overlay (t)
     // =====================================================================================
+    private (int Top, int Left, int Height, int Start) _tocGeometry;
+
     private void DrawTocOverlay()
     {
         var p = Palette();
         DrawScrim(p);
-        _scrimBgCache = _theme.IsDark ? p.PageBg.Darken(0.5) : p.PageBg.Mix(new Rgb(0, 0, 0), 0.42);
+        var entries = FilteredToc;
+        if (_tocIndex >= entries.Count) _tocIndex = Math.Max(0, entries.Count - 1);
 
-        int longest = _toc.Count == 0 ? 0 : _toc.Max(e => (e.Level - 1) * 2 + e.Title.Length);
+        int longest = _toc.Count == 0 ? 0 : _toc.Max(e => (e.Level - 1) * 2 + TextWidth.Of(e.Title));
         int padX = 1, marker = 2;
-        int contentW = Math.Clamp(longest + padX * 2 + marker, 30, _screen.Width - 6);
+        int contentW = Math.Clamp(longest + padX * 2 + marker, 30, Math.Max(30, _screen.Width - 6));
 
-        int avail = _screen.Height - 9;
-        int bodyRows = Math.Min(Math.Max(_toc.Count, 1), Math.Max(3, avail));
+        int avail = _screen.Height - 10;
+        int bodyRows = Math.Min(Math.Max(entries.Count, 1), Math.Max(3, avail));
 
         int cardW = Math.Min(_screen.Width - 4, contentW + 2);
-        int cardH = Math.Min(_screen.Height - 2, bodyRows + 7);   // borders + header + divider + footer divider + footer
+        int cardH = Math.Min(_screen.Height - 2, bodyRows + 8);   // borders + header + divider + filter + footer divider + footer
         int boxTop = Math.Max(0, (_screen.Height - cardH) / 2);
         int boxLeft = Math.Max(0, (_screen.Width - cardW) / 2);
 
         var (cTop, cLeft, cW, cH) = DrawCard(p, boxTop, boxLeft, cardW, cardH);
         DrawHeaderFooter(p, cTop, cLeft, cW, cH, "Contents",
-            $"{_tocIndex + 1}/{Math.Max(1, _toc.Count)}   up/down move   enter jump   esc close");
+            $"{(entries.Count == 0 ? 0 : _tocIndex + 1)}/{entries.Count}   type to filter   ↑↓ move   enter jump   esc close");
 
-        int bodyTop = cTop + 2;
+        // Filter row under the header divider.
+        int filterRow = cTop + 2;
+        _screen.MoveTo(filterRow, cLeft).SetBackground(p.Panel).SetForeground(_tocFilter.Length == 0 ? p.Muted : p.Fg);
+        string filterText = TextWidth.TrimToWidth(" " + (_tocFilter.Length == 0 ? "filter…" : "/" + _tocFilter + "▏"), cW);
+        _screen.Write(filterText);
+        int fw = TextWidth.Of(filterText);
+        if (fw < cW) _screen.Write(new string(' ', cW - fw));
+
+        int bodyTop = cTop + 3;
         int bodyHeight = (cTop + cH - 2) - bodyTop;
 
-        if (_toc.Count == 0)
+        if (entries.Count == 0)
         {
             _screen.MoveTo(bodyTop, cLeft + padX).SetBackground(p.Panel).SetForeground(p.Muted)
-                   .Write("(no headings)".PadRight(cW - padX));
+                   .Write(TextWidth.TrimToWidth(_toc.Count == 0 ? "(no headings)" : "(no match)", cW - padX).PadRight(cW - padX));
+            for (int i = 1; i < bodyHeight; i++) _screen.MoveTo(bodyTop + i, cLeft).SetBackground(p.Panel).Write(new string(' ', cW));
+            _tocGeometry = (bodyTop, cLeft, bodyHeight, 0);
             _screen.Reset();
             return;
         }
 
-        int start = Math.Max(0, Math.Min(_tocIndex - bodyHeight / 2, Math.Max(0, _toc.Count - bodyHeight)));
+        int start = Math.Max(0, Math.Min(_tocIndex - bodyHeight / 2, Math.Max(0, entries.Count - bodyHeight)));
+        _tocGeometry = (bodyTop, cLeft, bodyHeight, start);
+        // The section the viewport is currently in (so it can be marked distinctly from the cursor).
+        int currentSection = CurrentSectionIndex(entries);
         for (int i = 0; i < bodyHeight; i++)
         {
             int r = bodyTop + i, idx = start + i;
             _screen.MoveTo(r, cLeft);
-            if (idx >= _toc.Count) { _screen.SetBackground(p.Panel).Write(new string(' ', cW)); continue; }
+            if (idx >= entries.Count) { _screen.SetBackground(p.Panel).Write(new string(' ', cW)); continue; }
 
-            var entry = _toc[idx];
+            var entry = entries[idx];
             bool sel = idx == _tocIndex;
-            var bg = sel ? p.SelBg : p.Panel;
+            bool current = idx == currentSection;
+            var bg = sel ? p.SelBg : (current ? p.PanelAlt : p.Panel);
             _screen.SetBackground(bg);
-            // active marker (accent bar like the browser's left-border highlight)
-            _screen.SetForeground(sel ? p.SelFg : p.Accent).Write(sel ? "▌" : " ");
+            _screen.SetForeground(sel ? p.SelFg : p.Accent).Write(sel ? "▌" : (current ? "›" : " "));
 
             var indent = new string(' ', (entry.Level - 1) * 2);
             string label = " " + indent + entry.Title;
             int room = cW - 1;
-            if (VisibleWidth(label) > room) label = Truncate(label, room);
+            if (TextWidth.Of(label) > room) label = TruncateVisible(label, room);
 
             if (sel) _screen.SetForeground(p.SelFg).SetStyle(CellStyle.Bold);
             else _screen.SetForeground(entry.Level == 1 ? p.Fg : p.Muted).SetStyle(entry.Level == 1 ? CellStyle.Bold : CellStyle.None);
             _screen.Write(label);
             _screen.SetStyle(CellStyle.None);
-            int pad = room - VisibleWidth(label);
+            int pad = room - TextWidth.Of(label);
             if (pad > 0) _screen.SetBackground(bg).Write(new string(' ', pad));
         }
         _screen.Reset();
     }
 
-    private static string Truncate(string s, int room)
+    /// <summary>Index (into <paramref name="entries"/>) of the heading the viewport's top line belongs to.</summary>
+    private int CurrentSectionIndex(IReadOnlyList<TocEntry> entries)
+    {
+        int best = -1;
+        for (int i = 0; i < entries.Count; i++)
+        {
+            int line = FindHeadingLine(entries[i].Id);
+            if (line >= 0 && line <= _scroll) best = i;
+        }
+        return best;
+    }
+
+    /// <summary>Maps a mouse click inside the TOC overlay to an entry index.</summary>
+    private bool TocRowAt(int screenRow, int screenCol, out int index)
+    {
+        index = -1;
+        var (top, left, height, start) = _tocGeometry;
+        if (screenRow < top || screenRow >= top + height) return false;
+        if (screenCol < left) return false;
+        index = start + (screenRow - top);
+        return index >= 0 && index < FilteredToc.Count;
+    }
+
+    private static string TruncateVisible(string s, int room)
     {
         if (room <= 1) return s.Length > 0 ? "…" : "";
-        if (VisibleWidth(s) <= room) return s;
-        var sb = new StringBuilder();
-        int w = 0;
-        foreach (var ch in s)
-        {
-            int cw = VisibleWidth(ch.ToString());
-            if (w + cw > room - 1) break;
-            sb.Append(ch); w += cw;
-        }
-        sb.Append('…');
-        return sb.ToString();
+        if (TextWidth.Of(s) <= room) return s;
+        return TextWidth.TrimToWidth(s, Math.Max(0, room - 1)) + "…";
     }
 
     // =====================================================================================
-    //  Dev/testing capture hook — renders an overlay to an in-memory ANSI buffer (no terminal I/O).
+    //  Link hints — labels drawn over every visible link (f / F)
     // =====================================================================================
-    private TerminalViewer(bool dark, int width, int height, IReadOnlyList<TocEntry> toc)
+    private void DrawHintLabels()
     {
-        _options = null!;
-        _diagrams = null!;
+        if (!_hintMode || _hints.Count == 0) return;
+        var labelBg = _theme.IsDark ? Rgb.FromHex("#f0c674") : Rgb.FromHex("#9a6700");
+        var labelFg = _theme.IsDark ? new Rgb(0, 0, 0) : new Rgb(255, 255, 255);
+        var matchedBg = _theme.IsDark ? Rgb.FromHex("#56d364") : Rgb.FromHex("#1a7f37");
+        int offset = ContentOffset;
+        var byLink = _hints.ToDictionary(kv => kv.Value, kv => kv.Key);
+        var drawn = new HashSet<int>();
+        for (int row = 0; row < ViewportHeight; row++)
+        {
+            int lineIndex = _scroll + row;
+            if (lineIndex >= _lines.Count) break;
+            var line = _lines[lineIndex];
+            int col = 0;
+            foreach (var span in line.Spans)
+            {
+                int w = TextWidth.Of(span.Text);
+                if (span.LinkId is { } id && byLink.TryGetValue(id, out var label) && drawn.Add(id))
+                {
+                    bool prefixMatch = _hintTyped.Length > 0 && label.StartsWith(_hintTyped, StringComparison.OrdinalIgnoreCase);
+                    int at = Math.Max(0, col - 1);
+                    _screen.MoveTo(row, offset + at).SetBackground(prefixMatch ? matchedBg : labelBg).SetForeground(labelFg).SetStyle(CellStyle.Bold);
+                    _screen.Write(label.ToUpperInvariant());
+                    _screen.Reset();
+                }
+                col += w;
+            }
+            if (line.ImageLinkId is { } il && byLink.TryGetValue(il, out var ilabel) && drawn.Add(il))
+            {
+                _screen.MoveTo(row, offset).SetBackground(labelBg).SetForeground(labelFg).SetStyle(CellStyle.Bold).Write(ilabel.ToUpperInvariant());
+                _screen.Reset();
+            }
+        }
+    }
+
+    // =====================================================================================
+    //  Dev/testing capture hook — renders to an in-memory ANSI buffer (no terminal I/O).
+    // =====================================================================================
+    private TerminalViewer(bool dark, int width, int height, IReadOnlyList<TocEntry> toc, TerminalViewerOptions? options = null)
+    {
+        _options = options ?? new TerminalViewerOptions { FilePath = "capture.md", DarkTerminal = dark };
+        _diagrams = new NullDiagramRenderer();
         _currentPath = "capture.md";
-        _resolver = null!;
-        _imageLoader = null!;
-        _watcher = null!;
-        _theme = TerminalTheme.For(dark);
+        _resolver = new LinkResolver(Directory.GetCurrentDirectory());
+        _imageLoader = new Readmd.Diagrams.ImageLoader(Directory.GetCurrentDirectory());
+        _watcher = null;
+        _theme = _options.Theme ?? TerminalTheme.For(dark);
+        _keyMap = _options.KeyMap ?? KeyMap.Default;
+        _graphicsMode = GraphicsMode.None;
         _toc = toc;
         _screen = AnsiScreen.CreateCapture(width, height);
+    }
+
+    /// <summary>
+    /// Creates a headless viewer over <paramref name="markdown"/> for tests: no terminal, no
+    /// watcher, deterministic (synchronous) highlighting, images/diagrams never render. Drive it with
+    /// <see cref="Press"/> and inspect <see cref="FrameText"/>.
+    /// </summary>
+    internal static TerminalViewer CreateHeadless(string markdown, int width = 80, int height = 24, bool dark = true, TerminalViewerOptions? options = null, string path = "capture.md")
+    {
+        options ??= new TerminalViewerOptions { FilePath = path, DarkTerminal = dark, SynchronousHighlighting = true };
+        var v = new TerminalViewer(dark, width, height, [], options);
+        v._currentPath = Path.GetFullPath(path);
+        v.LoadMarkdown(v._currentPath, markdown, pushHistory: true);
+        return v;
+    }
+
+    private sealed class NullDiagramRenderer : IDiagramRenderer
+    {
+        public DiagramResult? TryGet(string key) => null;
+        public Task<DiagramResult> RenderAsync(DiagramRequest request, DiagramTheme theme, CancellationToken ct = default) =>
+            Task.FromResult(DiagramResult.Pending(request.Key));
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    /// <summary>Headless: feeds key events as the render loop would.</summary>
+    internal void Press(params KeyEvent[] keys)
+    {
+        foreach (var k in keys) HandleKeyEvent(k);
+    }
+
+    /// <summary>Headless: feeds a chord spec such as "j", "gg", "ctrl+d", "enter", "esc", "/abc enter".</summary>
+    internal void Press(string spec)
+    {
+        foreach (var token in spec.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var ev = KeyEventFromToken(token);
+            if (ev is not null) HandleKeyEvent(ev);
+            else foreach (var ch in token) HandleKeyEvent(new KeyEvent(KeyKind.Char, ch));
+        }
+    }
+
+    /// <summary>Headless: types literal text (every character, spaces included) as key events.</summary>
+    internal void Type(string text)
+    {
+        foreach (var ch in text) HandleKeyEvent(new KeyEvent(KeyKind.Char, ch));
+    }
+
+    internal static KeyEvent? KeyEventFromToken(string token)
+    {
+        bool ctrl = false, alt = false, shift = false;
+        string key = token;
+        if (token.Contains('+') && token.Length > 1)
+        {
+            var parts = token.Split('+');
+            key = parts[^1]; if (key.Length == 0) key = "+";
+            foreach (var m in parts[..^1]) { if (m == "ctrl") ctrl = true; else if (m == "alt") alt = true; else if (m == "shift") shift = true; }
+        }
+        KeyKind? kind = key.ToLowerInvariant() switch
+        {
+            "enter" => KeyKind.Enter, "esc" => KeyKind.Escape, "tab" => KeyKind.Tab, "backspace" => KeyKind.Backspace,
+            "up" => KeyKind.Up, "down" => KeyKind.Down, "left" => KeyKind.Left, "right" => KeyKind.Right,
+            "home" => KeyKind.Home, "end" => KeyKind.End, "pageup" => KeyKind.PageUp, "pagedown" => KeyKind.PageDown,
+            "space" => KeyKind.Char, "delete" => KeyKind.Delete, _ => null,
+        };
+        if (kind is not null) return new KeyEvent(kind.Value, key == "space" ? ' ' : '\0', ctrl, Alt: alt, Shift: shift);
+        if (key.Length == 1) return new KeyEvent(KeyKind.Char, key[0], ctrl, Alt: alt, Shift: shift);
+        return null;
+    }
+
+    /// <summary>Headless: the current scroll position (visible line index).</summary>
+    internal int Scroll => _scroll;
+    internal IReadOnlyList<DisplayLine> VisibleLines => _lines;
+    internal IReadOnlyList<DisplayLine> AllLines => _allLines;
+    internal int SearchHitCount => _searchHits.Count;
+    internal bool IsRunning => _running;
+    internal bool InHintMode => _hintMode;
+    internal IReadOnlyDictionary<string, int> Hints => _hints;
+    internal string? StatusMessage => _statusMessage;
+    internal IReadOnlyCollection<int> FoldedIds => _folded;
+    internal string CurrentPath => _currentPath;
+
+    /// <summary>Headless: renders a frame and returns the raw ANSI buffer.</summary>
+    internal string Frame()
+    {
+        TickPendingChord();
+        _screen.BeginFrame();
+        Draw();
+        return _screen.CaptureBuffer;
+    }
+
+    /// <summary>Headless: renders a frame and returns it as plain text rows (ANSI stripped).</summary>
+    internal List<string> FrameText()
+    {
+        var ansi = Frame();
+        return AnsiText.ToRows(ansi, _screen.Width, _screen.Height);
     }
 
     public static string CaptureHelpOverlay(bool dark, int width, int height)
     {
         var v = new TerminalViewer(dark, width, height, []);
         v._lines = SampleContent(v._theme, width, height);
+        v._allLines = v._lines;
         v._screen.BeginFrame();
         v.PaintBaseForCapture();
         v.DrawHelpOverlay();
@@ -452,6 +586,7 @@ public sealed partial class TerminalViewer
     {
         var v = new TerminalViewer(dark, width, height, toc);
         v._lines = SampleContent(v._theme, width, height);
+        v._allLines = v._lines;
         v._tocIndex = Math.Clamp(selected, 0, Math.Max(0, toc.Count - 1));
         v._screen.BeginFrame();
         v.PaintBaseForCapture();
@@ -512,8 +647,9 @@ public sealed partial class TerminalViewer
         var ast = Markdown.Parse(markdown, TerminalPipeline.Instance);
         var meta = MarkdownRenderer.ExtractMetadata(ast, "capture.md");
         var renderer = new MarkdownTerminalRenderer(v._theme, width - 1);
-        var result = renderer.Render(ast, meta.Toc, meta.FrontMatter);
-        v._lines = result.Lines;
+        var result = renderer.Render(ast, meta.Toc, meta.FrontMatter, markdown);
+        v._allLines = result.Lines;
+        v._lines = new List<DisplayLine>(result.Lines);
         v._scroll = Math.Clamp(scroll, 0, Math.Max(0, v._lines.Count - 1));
         v._screen.BeginFrame();
         v.PaintBaseForCapture();
@@ -529,8 +665,9 @@ public sealed partial class TerminalViewer
         var v = new TerminalViewer(dark, width, height, []);
         var doc = Markdown.Parse(markdown, TerminalPipeline.Instance);
         var renderer = new MarkdownTerminalRenderer(v._theme, width - 1);
-        var result = renderer.Render(doc, null);
-        v._lines = result.Lines;
+        var result = renderer.Render(doc, null, null, markdown);
+        v._allLines = result.Lines;
+        v._lines = new List<DisplayLine>(result.Lines);
         v._selectionMode = true;
         v._selAnchor = (aLine, aCol);
         v._selCursor = (bLine, bCol);

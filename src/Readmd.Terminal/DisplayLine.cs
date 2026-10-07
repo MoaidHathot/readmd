@@ -47,6 +47,42 @@ public enum CellStyle
 /// <summary>A run of text sharing one style/color within a display line.</summary>
 public sealed record StyledSpan(string Text, Rgb? Color = null, CellStyle Style = CellStyle.None, int? LinkId = null, Rgb? Background = null);
 
+/// <summary>The kind of source block a display line was produced from.</summary>
+public enum BlockKind
+{
+    None,
+    Paragraph,
+    Heading,
+    Code,
+    Table,
+    ListItem,
+    Quote,
+    Alert,
+    Image,
+    Diagram,
+    Math,
+    Rule,
+    Html,
+    Details,
+    Footnote,
+    Toc,
+    FrontMatter,
+}
+
+/// <summary>
+/// Per-block metadata recorded while rendering, keyed by <see cref="DisplayLine.BlockId"/>: what
+/// the block is, where it came from, and the copyable content (code text, diagram source, …) that
+/// block-level actions (yank, focus, toggle source) operate on.
+/// </summary>
+public sealed record BlockInfo(int Id, BlockKind Kind, int SourceLine, string? Text = null, string? DiagramKey = null, int HeadingLevel = 0, string? Language = null);
+
+/// <summary>
+/// A foldable region of the layout: the header line (a heading or a &lt;details&gt; summary) and the
+/// inclusive raw-line range it hides when collapsed. Line indices refer to the renderer's output
+/// (before the viewer inserts image rows).
+/// </summary>
+public sealed record FoldRegion(int Id, int HeaderLine, int StartLine, int EndLine, bool DefaultOpen, bool IsHeading);
+
 /// <summary>
 /// One visual line in the rendered document. May carry a diagram anchor, meaning a rendered
 /// image should be drawn starting at this line and the following <see cref="DiagramRows"/> rows
@@ -59,10 +95,26 @@ public sealed class DisplayLine
     public int SourceLine { get; init; }
 
     /// <summary>
-    /// Identifies the source block this line belongs to (0 = none). Lines of one code block share an
-    /// id so a background highlighter can find and restyle them in place after the first paint.
+    /// Identifies the source block this line belongs to (0 = none/separator). Lines of one block
+    /// share an id so the viewer can treat the block as a unit (active-block actions, in-place
+    /// re-highlighting of code).
     /// </summary>
     public int BlockId { get; set; }
+
+    /// <summary>The kind of block this line belongs to.</summary>
+    public BlockKind Kind { get; set; }
+
+    /// <summary>Heading level when this line starts a heading (0 otherwise).</summary>
+    public int HeadingLevel { get; set; }
+
+    /// <summary>Id of the <see cref="FoldRegion"/> this line is the header of (0 = none).</summary>
+    public int FoldHeader { get; set; }
+
+    /// <summary>Set on the synthetic "… N lines folded" row standing in for a collapsed region.</summary>
+    public int FoldPlaceholder { get; set; }
+
+    /// <summary>Set on provisional rows reserved under an image/diagram that is still rendering.</summary>
+    public bool IsPlaceholder { get; set; }
 
     /// <summary>
     /// If set, the whole line is filled with this background color out to the terminal width

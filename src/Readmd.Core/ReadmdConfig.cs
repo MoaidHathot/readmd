@@ -47,8 +47,10 @@ public sealed class ReadmdConfig
     /// <summary>Named custom color themes that can be selected via <see cref="Theme"/>.</summary>
     [JsonPropertyName("themes")] public Dictionary<string, ColorTheme>? Themes { get; set; }
 
-    /// <summary>Keybinding overrides: action name -> single key character (e.g. "quit": "x").</summary>
-    [JsonPropertyName("keys")] public Dictionary<string, string>? Keys { get; set; }
+    /// <summary>Keybinding overrides: action name -> chord ("x", "ctrl+q", "gg") or a list of chords.</summary>
+    [JsonPropertyName("keys")]
+    [JsonConverter(typeof(KeyBindingsConverter))]
+    public Dictionary<string, IReadOnlyList<string>>? Keys { get; set; }
 
     public static ReadmdConfig Empty { get; } = new();
 
@@ -95,6 +97,50 @@ public sealed class ReadmdConfig
         var result = new Dictionary<string, T>(baseDict, StringComparer.OrdinalIgnoreCase);
         foreach (var (k, v) in over) result[k] = v;
         return result;
+    }
+}
+
+/// <summary>
+/// Accepts each key binding as either a single string (<c>"quit": "x"</c>) or an array of strings
+/// (<c>"quit": ["x", "ctrl+q"]</c>).
+/// </summary>
+public sealed class KeyBindingsConverter : JsonConverter<Dictionary<string, IReadOnlyList<string>>>
+{
+    public override Dictionary<string, IReadOnlyList<string>>? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Null) return null;
+        if (reader.TokenType != JsonTokenType.StartObject) throw new JsonException("keys must be an object");
+        var result = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+        while (reader.Read())
+        {
+            if (reader.TokenType == JsonTokenType.EndObject) return result;
+            if (reader.TokenType != JsonTokenType.PropertyName) throw new JsonException();
+            var name = reader.GetString() ?? "";
+            reader.Read();
+            if (reader.TokenType == JsonTokenType.String) result[name] = [reader.GetString() ?? ""];
+            else if (reader.TokenType == JsonTokenType.StartArray)
+            {
+                var list = new List<string>();
+                while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
+                    if (reader.TokenType == JsonTokenType.String) list.Add(reader.GetString() ?? "");
+                result[name] = list;
+            }
+            else if (reader.TokenType == JsonTokenType.Null) result[name] = [];
+            else throw new JsonException($"keys.{name} must be a string or an array of strings");
+        }
+        throw new JsonException();
+    }
+
+    public override void Write(Utf8JsonWriter writer, Dictionary<string, IReadOnlyList<string>> value, JsonSerializerOptions options)
+    {
+        writer.WriteStartObject();
+        foreach (var (k, v) in value)
+        {
+            writer.WritePropertyName(k);
+            if (v.Count == 1) writer.WriteStringValue(v[0]);
+            else { writer.WriteStartArray(); foreach (var s in v) writer.WriteStringValue(s); writer.WriteEndArray(); }
+        }
+        writer.WriteEndObject();
     }
 }
 

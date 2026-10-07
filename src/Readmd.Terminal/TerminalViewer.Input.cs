@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using Readmd.Core;
 
 namespace Readmd.Terminal;
@@ -27,6 +28,7 @@ public sealed partial class TerminalViewer
             if (!forceDiagramRerender && _diagramResults.TryGetValue(key, out var existing) && existing.Status == DiagramStatus.Ready) continue;
             _diagramRequested.Add(key);
             var req = request;
+            lock (_stateLock) { ReservePlaceholderRows(key); _dirty = true; }
             _ = Task.Run(async () =>
             {
                 var result = await _diagrams.RenderAsync(req, _diagramTheme, _lifetimeCts.Token);
@@ -72,6 +74,7 @@ public sealed partial class TerminalViewer
             _diagramRequested.Add(key);
             var imgUrl = url;
             var docPath = _currentPath;
+            lock (_stateLock) { ReservePlaceholderRows(key); _dirty = true; }
             _ = Task.Run(async () =>
             {
                 var result = await _imageLoader.LoadAsync(imgUrl, docPath);
@@ -94,6 +97,7 @@ public sealed partial class TerminalViewer
             _diagramRequested.Add(groupKey);
             var groupUrls = urls;
             var docPath = _currentPath;
+            lock (_stateLock) { ReservePlaceholderRows(groupKey); _dirty = true; }
             _ = Task.Run(async () =>
             {
                 var result = await _imageLoader.LoadGroupAsync(groupKey, groupUrls, docPath);
@@ -111,6 +115,37 @@ public sealed partial class TerminalViewer
     }
 
     /// <summary>
+    /// While a diagram/image is still rendering, reserve a few rows beneath its anchor showing a
+    /// "rendering…" hint, so content below doesn't jump when the image lands (its final height
+    /// replaces the placeholder rows). Uses the last known height for this key when available.
+    /// </summary>
+    private void ReservePlaceholderRows(string key)
+    {
+        if (_graphicsMode == GraphicsMode.None) return;
+        if (_diagramResults.TryGetValue(key, out var r) && r.Status == DiagramStatus.Ready) return;
+        int rows = _lastKnownRows.TryGetValue(key, out var known) ? known : 3;
+        string reserveTag = "reserve:" + key;
+        for (int i = 0; i < _lines.Count; i++)
+        {
+            if (_lines[i].DiagramKey != key) continue;
+            int existing = 0;
+            while (i + 1 + existing < _lines.Count && _lines[i + 1 + existing].DiagramKey == reserveTag) existing++;
+            if (existing > 0) { i += existing; continue; }
+            for (int k = 0; k < rows; k++)
+            {
+                var line = new DisplayLine { DiagramKey = reserveTag, IsPlaceholder = true };
+                if (k == 1) line.Spans.Add(new StyledSpan(new string(' ', 2 + _lines[i].DiagramIndent) + "⟳ rendering…", _theme.Muted, CellStyle.Italic));
+                _lines.Insert(i + 1 + k, line);
+            }
+            if (i < _scroll) _scroll += rows;
+            i += rows;
+        }
+    }
+
+    // Remembered image heights (rows) per key, so a placeholder can be sized right on reload.
+    private readonly Dictionary<string, int> _lastKnownRows = new();
+
+    /// <summary>
     /// Inserts blank reservation lines beneath each anchor for a diagram/image so the text after it
     /// flows below the rendered image instead of being painted over. Handles the same image/diagram
     /// appearing multiple times in the document.
@@ -118,7 +153,8 @@ public sealed partial class TerminalViewer
     private void ReserveDiagramRows(string key, DiagramResult result, bool adjustScroll = true)
     {
         int needed = DiagramRows(result);
-        var list = _lines as List<DisplayLine> ?? _lines.ToList();
+        _lastKnownRows[key] = needed;
+        var list = _lines;
 
         // Find all anchor indices for this key.
         var anchors = new List<int>();
@@ -133,23 +169,16 @@ public sealed partial class TerminalViewer
             int existing = 0;
             for (int i = anchor + 1; i < list.Count && list[i].DiagramKey == "reserve:" + key; i++) existing++;
 
-            int delta = needed - existing;
-            if (delta > 0)
-            {
-                for (int i = 0; i < delta; i++)
-                    list.Insert(anchor + 1, new DisplayLine { DiagramKey = "reserve:" + key });
-            }
-            else if (delta < 0)
-            {
-                for (int i = 0; i < -delta; i++)
-                    list.RemoveAt(anchor + 1);
-            }
+            // Placeholder rows (with their "rendering…" text) are replaced by clean blank rows.
+            for (int i = 0; i < existing; i++) list.RemoveAt(anchor + 1);
+            for (int i = 0; i < needed; i++)
+                list.Insert(anchor + 1, new DisplayLine { DiagramKey = "reserve:" + key });
 
+            int delta = needed - existing;
             // Keep the viewport stable for async single-diagram resolution.
             if (adjustScroll && delta != 0 && anchor < _scroll)
                 _scroll = Math.Max(0, _scroll + delta);
         }
-        _lines = list;
     }
 
     /// <summary>
@@ -158,10 +187,10 @@ public sealed partial class TerminalViewer
     /// </summary>
     private void ShowDiagramError(string key, string? error, string label = "diagram error")
     {
-        var list = _lines as List<DisplayLine> ?? _lines.ToList();
+        var list = _lines;
         var msg = string.IsNullOrWhiteSpace(error) ? "could not be rendered" : error!.Trim();
 
-        int width = Math.Max(20, _screen.Width - 6);
+        int width = Math.Max(20, ContentWidth - 6);
         var wrapped = WrapPlain(msg, width);
         var errColor = _theme.IsDark ? Rgb.FromHex("#f08c8c") : Rgb.FromHex("#cf222e");
         string reserveTag = "reserve:" + key;
@@ -173,9 +202,11 @@ public sealed partial class TerminalViewer
         for (int a = anchors.Count - 1; a >= 0; a--)
         {
             int anchor = anchors[a];
-            // Recolour the caption to signal failure.
+            // Recolour the caption to signal failure (keep any gutter/indent spans in front).
             var cap = list[anchor];
-            cap.Spans.Clear();
+            int keep = 0;
+            while (keep < cap.Spans.Count && cap.Spans[keep].Text.Trim().Length == 0) keep++;
+            cap.Spans.RemoveRange(keep, cap.Spans.Count - keep);
             cap.Spans.Add(new StyledSpan("✖ ", errColor, CellStyle.Bold));
             cap.Spans.Add(new StyledSpan(label, errColor, CellStyle.Bold));
 
@@ -184,17 +215,29 @@ public sealed partial class TerminalViewer
             while (anchor + 1 + existing < list.Count && list[anchor + 1 + existing].DiagramKey == reserveTag) existing++;
             for (int i = 0; i < existing; i++) list.RemoveAt(anchor + 1);
 
+            // For diagrams, show the source beneath the error so the content isn't lost.
+            var sourceLines = new List<DisplayLine>();
+            if (_blocks.TryGetValue(cap.BlockId, out var info) && info.Kind == BlockKind.Diagram && info.Text is { Length: > 0 } src)
+                sourceLines = SourceBlockLines(src, info.Language ?? "", cap.DiagramIndent);
+
+            for (int i = sourceLines.Count - 1; i >= 0; i--) { sourceLines[i].DiagramKey = reserveTag; list.Insert(anchor + 1, sourceLines[i]); }
             for (int i = wrapped.Count - 1; i >= 0; i--)
             {
                 var line = new DisplayLine { DiagramKey = reserveTag };
-                line.Spans.Add(new StyledSpan("  " + wrapped[i], _theme.Muted));
+                line.Spans.Add(new StyledSpan(new string(' ', 2 + cap.DiagramIndent) + wrapped[i], _theme.Muted));
                 list.Insert(anchor + 1, line);
             }
             // Keep the viewport stable if rows were added above the current top.
-            int delta = wrapped.Count - existing;
+            int delta = wrapped.Count + sourceLines.Count - existing;
             if (delta != 0 && anchor < _scroll) _scroll = Math.Max(0, _scroll + delta);
         }
-        _lines = list;
+    }
+
+    /// <summary>Lays out diagram source as a code block (for failures, graphics:none and the `s` toggle).</summary>
+    private List<DisplayLine> SourceBlockLines(string source, string language, int indent)
+    {
+        var scratch = new MarkdownTerminalRenderer(_theme, ContentWidth) { LineNumbers = _options.LineNumbers, TabSize = _options.TabSize };
+        return scratch.RenderCodeLines(source, language, indent);
     }
 
     /// <summary>Greedy word-wrap of a plain string to the given width.</summary>
@@ -205,7 +248,7 @@ public sealed partial class TerminalViewer
         {
             var words = rawLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (words.Length == 0) { lines.Add(""); continue; }
-            var sb = new System.Text.StringBuilder();
+            var sb = new StringBuilder();
             foreach (var w in words)
             {
                 if (sb.Length == 0) sb.Append(w);
@@ -218,153 +261,6 @@ public sealed partial class TerminalViewer
         return lines;
     }
 
-    // ---------------- input ----------------
-    private void HandleKeyEvent(KeyEvent key)
-    {
-        // Focus/paste events outside a text prompt carry no command meaning.
-        if (key.Kind is KeyKind.FocusIn or KeyKind.FocusOut) return;
-        if (key.Kind == KeyKind.Paste && !_searchMode) return;
-
-        if (_searchMode) { HandleSearchKey(key); return; }
-        if (_tocMode) { HandleTocKey(key); return; }
-        if (_focusMode) { HandleFocusKey(key); return; }
-        if (_pendingExternalUrl is not null)
-        {
-            // Awaiting confirmation to open a remote link. Only respond to keyboard keys — mouse
-            // events (notably the button-release that follows a click that opened this prompt, plus
-            // moves/scrolls) must not count as an answer, or clicking a link could never be
-            // confirmed because its own release would immediately cancel the prompt.
-            if (key.Kind is KeyKind.MouseClick or KeyKind.MouseDrag or KeyKind.MouseDragEnd
-                or KeyKind.MouseRightClick or KeyKind.MouseScrollUp or KeyKind.MouseScrollDown)
-                return;
-
-            char c = key.Kind == KeyKind.Char ? char.ToLowerInvariant(key.Char) : '\0';
-            var url = _pendingExternalUrl;
-            _pendingExternalUrl = null;
-            _dirty = true;
-            if (c == 'y')
-            {
-                OpenUrl(url!);
-                SetStatus("Opened: " + url);
-            }
-            else
-            {
-                SetStatus("Cancelled");
-            }
-            return;
-        }
-        if (_helpMode)
-        {
-            // Any key dismisses the help overlay.
-            _helpMode = false;
-            _dirty = true;
-            return;
-        }
-
-        bool ctrl = key.Ctrl;
-        char ch = key.Kind == KeyKind.Char ? char.ToLowerInvariant(key.Char) : '\0';
-        bool shift = key.Kind == KeyKind.Char && char.IsUpper(key.Char);
-
-        // Handle a pending 'g' prefix (vim 'gg' = top). Any non-'g' key cancels the prefix.
-        bool gPending = _pendingGPrefix && DateTime.UtcNow <= _pendingGUntil;
-        _pendingGPrefix = false;
-        if (gPending && ch == 'g' && !ctrl && !shift)
-        {
-            ScrollTo(0); // gg -> top
-            return;
-        }
-
-        // Non-char keys first (arrows, page, home/end, enter, backspace, escape, mouse wheel).
-        switch (key.Kind)
-        {
-            case KeyKind.MouseScrollUp when key.Ctrl: ZoomDiagrams(1); return;
-            case KeyKind.MouseScrollDown when key.Ctrl: ZoomDiagrams(-1); return;
-            case KeyKind.MouseScrollUp: ScrollBy(-1); return;
-            case KeyKind.MouseScrollDown: ScrollBy(1); return;
-            case KeyKind.MouseClick when _selectionMode: SelectionBegin(key.MouseRow, key.MouseCol); return;
-            case KeyKind.MouseClick: HandleClick(key.MouseRow, key.MouseCol, ctrl: key.Ctrl); return;
-            case KeyKind.MouseDrag when _selectionMode: SelectionExtend(key.MouseRow, key.MouseCol); return;
-            case KeyKind.MouseDragEnd when _selectionMode: SelectionExtend(key.MouseRow, key.MouseCol); return;
-            case KeyKind.MouseRightClick when _selectionMode: CopySelection(); return;
-            case KeyKind.MouseDrag: return;
-            case KeyKind.MouseDragEnd: return;
-            case KeyKind.MouseRightClick: return;
-            case KeyKind.Down: ScrollBy(1); return;
-            case KeyKind.Up: ScrollBy(-1); return;
-            case KeyKind.PageDown: ScrollBy(ViewportHeight - 2); return;
-            case KeyKind.PageUp: ScrollBy(-(ViewportHeight - 2)); return;
-            case KeyKind.Home: ScrollTo(0); return;
-            case KeyKind.End: ScrollTo(_lines.Count); return;
-            case KeyKind.Left: GoBack(); return;
-            case KeyKind.Right: GoForward(); return;
-            case KeyKind.Backspace: GoBack(); return;
-            case KeyKind.Enter: FollowFirstVisibleLink(); return;
-            case KeyKind.Escape:
-                ClearSelection();   // dismiss an active mark-mode selection
-                return;
-            case KeyKind.Tab: return;
-        }
-
-        // Ctrl+letter / Ctrl+digit combinations.
-        if (ctrl)
-        {
-            switch (ch)
-            {
-                case 'e': ScrollBy(1); return;                       // vim Ctrl+e
-                case 'y': ScrollBy(-1); return;                      // vim Ctrl+y
-                case 'd': ScrollBy(ViewportHeight / 2); return;      // half page down
-                case 'u': ScrollBy(-ViewportHeight / 2); return;     // half page up
-                case 'f': ScrollBy(ViewportHeight - 2); return;      // full page down
-                case 'b': ScrollBy(-(ViewportHeight - 2)); return;   // full page up
-                case '0': ResetZoom(); return;                       // Ctrl+0 -> reset diagram zoom
-            }
-            // Some terminals send Ctrl+0 as the raw char '0' too.
-            if (key.Char == '0') { ResetZoom(); return; }
-            return;
-        }
-
-        // Plain character keys. The 'g' prefix and digit link-following keep fixed bindings; the
-        // common actions are resolved through the (optionally user-configured) key map.
-        switch (ch)
-        {
-            case 'g' when shift: ScrollTo(_lines.Count); return; // G -> bottom
-            case 'g': // g -> arm 'gg' prefix
-                _pendingGPrefix = true;
-                _pendingGUntil = DateTime.UtcNow.AddMilliseconds(700);
-                return;
-            case 'n' when shift: JumpSearch(-1); return; // N -> previous match (Shift+n)
-            case >= '1' and <= '9': FollowLinkByOrdinal(ch - '0'); return;
-        }
-
-        if (RunMappedAction(_keyMap.Resolve(ch))) return;
-    }
-
-    // Dispatches a remappable editor action. Returns true if the action was handled.
-    private bool RunMappedAction(EditorAction action)
-    {
-        switch (action)
-        {
-            case EditorAction.Quit: _running = false; return true;
-            case EditorAction.ScrollDown: ScrollBy(1); return true;
-            case EditorAction.ScrollUp: ScrollBy(-1); return true;
-            case EditorAction.PageDown: ScrollBy(ViewportHeight - 2); return true;
-            case EditorAction.PageUp: ScrollBy(-(ViewportHeight - 2)); return true;
-            case EditorAction.GoBottom: ScrollTo(_lines.Count); return true;
-            case EditorAction.Search: EnterSearch(); return true;
-            case EditorAction.SearchNext: JumpSearch(1); return true;
-            case EditorAction.SearchPrev: JumpSearch(-1); return true;
-            case EditorAction.Toc: OpenToc(); return true;
-            case EditorAction.OpenInBrowser: OpenInBrowser(); return true;
-            case EditorAction.ViewImage: OpenFocusView(); return true;
-            case EditorAction.ToggleSelectionMode: ToggleSelectionMode(); return true;
-            case EditorAction.Rerender: Rerender(); return true;
-            case EditorAction.ToggleTheme: ToggleTheme(); return true;
-            case EditorAction.ToggleBackground: ToggleSolidBackground(); return true;
-            case EditorAction.Help: _helpMode = true; _dirty = true; return true;
-            default: return false;
-        }
-    }
-
     // ---------------- scrolling ----------------
     private void ScrollBy(int delta) => ScrollTo(_scroll + delta);
 
@@ -375,12 +271,9 @@ public sealed partial class TerminalViewer
         if (newScroll != _scroll)
         {
             _scroll = newScroll;
-            _sixelCacheNeedsRedraw();
             _dirty = true;
         }
     }
-
-    private void _sixelCacheNeedsRedraw() { /* images redrawn each frame from cache; scrolling is fine */ }
 
     // ---------------- search ----------------
     private void EnterSearch()
@@ -388,9 +281,16 @@ public sealed partial class TerminalViewer
         _searchMode = true;
         _searchQuery = "";
         _searchHits.Clear();
+        _hitLines.Clear();
         _searchHitIndex = -1;
+        _searchHistoryIndex = -1;
         _dirty = true;
     }
+
+    private readonly List<string> _searchHistory = [];
+    private int _searchHistoryIndex = -1;
+    private bool _searchRegex;
+    private bool _searchCaseSensitive;
 
     private void HandleSearchKey(KeyEvent key)
     {
@@ -405,14 +305,27 @@ public sealed partial class TerminalViewer
 
         if (isEscape)
         {
-            _searchMode = false; _searchHits.Clear(); _searchHitIndex = -1; _dirty = true;
+            _searchMode = false; _searchHits.Clear(); _hitLines.Clear(); _searchHitIndex = -1; _dirty = true;
             return;
         }
         if (isEnter)
         {
             _searchMode = false;
+            if (_searchQuery.Length > 0 && (_searchHistory.Count == 0 || _searchHistory[^1] != _searchQuery)) _searchHistory.Add(_searchQuery);
             if (_searchHits.Count > 0) ScrollToHit(_searchHitIndex);
             _dirty = true;
+            return;
+        }
+        // Ctrl+R toggles regex, Ctrl+I/Alt+C toggles case sensitivity while typing.
+        if (key.Kind == KeyKind.Char && key.Ctrl && char.ToLowerInvariant(key.Char) == 'r') { _searchRegex = !_searchRegex; RecomputeSearch(); return; }
+        if (key.Kind == KeyKind.Char && ((key.Ctrl && char.ToLowerInvariant(key.Char) == 'i') || (key.Alt && char.ToLowerInvariant(key.Char) == 'c'))) { _searchCaseSensitive = !_searchCaseSensitive; RecomputeSearch(); return; }
+        // History: Up/Down recall earlier queries.
+        if (key.Kind is KeyKind.Up or KeyKind.Down && _searchHistory.Count > 0)
+        {
+            if (_searchHistoryIndex < 0) _searchHistoryIndex = _searchHistory.Count;
+            _searchHistoryIndex = Math.Clamp(_searchHistoryIndex + (key.Kind == KeyKind.Up ? -1 : 1), 0, _searchHistory.Count);
+            _searchQuery = _searchHistoryIndex < _searchHistory.Count ? _searchHistory[_searchHistoryIndex] : "";
+            RecomputeSearch();
             return;
         }
         if (isBackspace)
@@ -441,31 +354,59 @@ public sealed partial class TerminalViewer
         }
     }
 
+    /// <summary>Smart case: a query with any uppercase letter is case-sensitive unless overridden.</summary>
+    private bool EffectiveCaseSensitive => _searchCaseSensitive || _searchQuery.Any(char.IsUpper);
+
     private void RecomputeSearch(bool jumpToFirst = true)
     {
         _searchHits.Clear();
+        _hitLines.Clear();
         _searchHitIndex = -1;
+        _searchError = null;
         if (_searchQuery.Length >= 1)
         {
-            var q = _searchQuery;
-            for (int i = 0; i < _lines.Count; i++)
+            var comparison = EffectiveCaseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+            System.Text.RegularExpressions.Regex? regex = null;
+            if (_searchRegex)
             {
-                var text = _lines[i].PlainText;
-                int idx = 0;
-                while ((idx = text.IndexOf(q, idx, StringComparison.OrdinalIgnoreCase)) >= 0)
+                try
                 {
-                    // Hits are stored in DISPLAY columns (wide/emoji glyphs are two cells) so the
-                    // highlight lands exactly where the match is drawn, not shifted right of it.
-                    int col = TextWidth.OfPrefix(text, idx);
-                    int len = TextWidth.Of(text.Substring(idx, q.Length));
-                    _searchHits.Add((i, col, Math.Max(1, len)));
-                    idx += q.Length;
+                    regex = new System.Text.RegularExpressions.Regex(_searchQuery,
+                        (EffectiveCaseSensitive ? System.Text.RegularExpressions.RegexOptions.None : System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+                        | System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(200));
+                }
+                catch (ArgumentException ex) { _searchError = ex.Message; _dirty = true; return; }
+            }
+            // Search the FULL layout (folded regions included) so a hit inside a collapsed section
+            // can be jumped to; jumping unfolds it.
+            foreach (var line in _allLines)
+            {
+                var text = line.PlainText;
+                if (text.Length == 0) continue;
+                if (regex is not null)
+                {
+                    try
+                    {
+                        foreach (System.Text.RegularExpressions.Match m in regex.Matches(text))
+                        {
+                            if (m.Length == 0) continue;
+                            AddHit(line, text, m.Index, m.Length);
+                        }
+                    }
+                    catch (System.Text.RegularExpressions.RegexMatchTimeoutException) { }
+                    continue;
+                }
+                int idx = 0;
+                while ((idx = text.IndexOf(_searchQuery, idx, comparison)) >= 0)
+                {
+                    AddHit(line, text, idx, _searchQuery.Length);
+                    idx += _searchQuery.Length;
                 }
             }
             if (_searchHits.Count > 0)
             {
                 // pick the first hit at or after current scroll
-                _searchHitIndex = _searchHits.FindIndex(h => h.Line >= _scroll);
+                _searchHitIndex = _searchHits.FindIndex(h => VisibleIndexOf(h.Line) >= _scroll);
                 if (_searchHitIndex < 0) _searchHitIndex = 0;
                 if (jumpToFirst) ScrollToHit(_searchHitIndex);
             }
@@ -473,10 +414,30 @@ public sealed partial class TerminalViewer
         _dirty = true;
     }
 
+    private string? _searchError;
+
+    private void AddHit(DisplayLine line, string text, int idx, int length)
+    {
+        // Hits are stored in DISPLAY columns (wide/emoji glyphs are two cells) so the highlight
+        // lands exactly where the match is drawn, not shifted right of it.
+        int col = TextWidth.OfPrefix(text, idx);
+        int len = TextWidth.Of(text.Substring(idx, Math.Min(length, text.Length - idx)));
+        _searchHits.Add((line, col, Math.Max(1, len)));
+        _hitLines.Add(line);
+    }
+
+    /// <summary>Index of a line object in the visible projection, or -1 when hidden by a fold.</summary>
+    private int VisibleIndexOf(DisplayLine line)
+    {
+        // Lines are reference-compared; the visible list is small enough for a linear scan.
+        for (int i = 0; i < _lines.Count; i++) if (ReferenceEquals(_lines[i], line)) return i;
+        return -1;
+    }
+
     private void JumpSearch(int dir)
     {
-        if (_searchHits.Count == 0) return;
-        _searchHitIndex = (_searchHitIndex + dir + _searchHits.Count) % _searchHits.Count;
+        if (_searchHits.Count == 0) { if (_searchQuery.Length > 0) SetStatus("No matches"); return; }
+        _searchHitIndex = ((_searchHitIndex + dir) % _searchHits.Count + _searchHits.Count) % _searchHits.Count;
         ScrollToHit(_searchHitIndex);
         _dirty = true;
     }
@@ -484,9 +445,23 @@ public sealed partial class TerminalViewer
     private void ScrollToHit(int hitIndex)
     {
         if (hitIndex < 0 || hitIndex >= _searchHits.Count) return;
-        int line = _searchHits[hitIndex].Line;
-        if (line < _scroll || line >= _scroll + ViewportHeight)
-            ScrollTo(line - ViewportHeight / 2);
+        var line = _searchHits[hitIndex].Line;
+        int idx = VisibleIndexOf(line);
+        if (idx < 0)
+        {
+            // Hidden inside a folded region: unfold every region containing it, then re-project.
+            int raw = IndexOfRaw(line);
+            if (raw >= 0 && UnfoldContaining(raw)) idx = VisibleIndexOf(line);
+        }
+        if (idx < 0) return;
+        if (idx < _scroll || idx >= _scroll + ViewportHeight)
+            ScrollTo(idx - ViewportHeight / 2);
+    }
+
+    private int IndexOfRaw(DisplayLine line)
+    {
+        for (int i = 0; i < _allLines.Count; i++) if (ReferenceEquals(_allLines[i], line)) return i;
+        return -1;
     }
 
     // ---------------- TOC ----------------
@@ -494,35 +469,69 @@ public sealed partial class TerminalViewer
     {
         if (_toc.Count == 0) { SetStatus("No headings"); return; }
         _tocMode = true;
+        _tocFilter = "";
         // start near the heading closest to current scroll
         _tocIndex = 0;
         for (int i = 0; i < _toc.Count; i++)
-            if (FindHeadingLine(_toc[i].Id) <= _scroll) _tocIndex = i;
+            if (FindHeadingLine(_toc[i].Id) is var l && l >= 0 && l <= _scroll) _tocIndex = i;
         _dirty = true;
     }
 
+    private string _tocFilter = "";
+
+    /// <summary>TOC entries matching the type-to-filter text (all when empty).</summary>
+    private IReadOnlyList<TocEntry> FilteredToc =>
+        _tocFilter.Length == 0 ? _toc : _toc.Where(e => e.Title.Contains(_tocFilter, StringComparison.OrdinalIgnoreCase)).ToList();
+
     private void HandleTocKey(KeyEvent key)
     {
-        char ch = key.Kind == KeyKind.Char ? char.ToLowerInvariant(key.Char) : '\0';
-        if (key.Kind == KeyKind.Escape || ch is 't' or 'q')
+        var entries = FilteredToc;
+        char ch = key.Kind == KeyKind.Char ? key.Char : '\0';
+        if (key.Kind == KeyKind.Escape)
         {
+            if (_tocFilter.Length > 0) { _tocFilter = ""; _tocIndex = 0; _dirty = true; return; }
             _tocMode = false; _dirty = true; return;
         }
-        if (key.Kind == KeyKind.Down || ch == 'j')
+        if (key.Kind == KeyKind.Down || key.Kind == KeyKind.MouseScrollDown || (ch == 'j' && _tocFilter.Length == 0) || (key.Ctrl && ch == 'n'))
         {
-            _tocIndex = Math.Min(_tocIndex + 1, _toc.Count - 1); _dirty = true; return;
+            _tocIndex = Math.Min(_tocIndex + 1, Math.Max(0, entries.Count - 1)); _dirty = true; return;
         }
-        if (key.Kind == KeyKind.Up || ch == 'k')
+        if (key.Kind == KeyKind.Up || key.Kind == KeyKind.MouseScrollUp || (ch == 'k' && _tocFilter.Length == 0) || (key.Ctrl && ch == 'p'))
         {
             _tocIndex = Math.Max(_tocIndex - 1, 0); _dirty = true; return;
         }
-        if (key.Kind == KeyKind.Enter)
+        if (key.Kind == KeyKind.PageDown) { _tocIndex = Math.Min(_tocIndex + 10, Math.Max(0, entries.Count - 1)); _dirty = true; return; }
+        if (key.Kind == KeyKind.PageUp) { _tocIndex = Math.Max(_tocIndex - 10, 0); _dirty = true; return; }
+        if (key.Kind == KeyKind.Home || (ch == 'g' && _tocFilter.Length == 0)) { _tocIndex = 0; _dirty = true; return; }
+        if (key.Kind == KeyKind.End || (ch == 'G' && _tocFilter.Length == 0)) { _tocIndex = Math.Max(0, entries.Count - 1); _dirty = true; return; }
+        if (key.Kind == KeyKind.Backspace)
         {
+            if (_tocFilter.Length > 0) { _tocFilter = _tocFilter[..^1]; _tocIndex = 0; _dirty = true; }
+            return;
+        }
+        if (key.Kind == KeyKind.Enter || key.Kind == KeyKind.MouseClick)
+        {
+            if (key.Kind == KeyKind.MouseClick)
+            {
+                if (!TocRowAt(key.MouseRow, key.MouseCol, out var clicked)) { _tocMode = false; _dirty = true; return; }
+                _tocIndex = clicked;
+            }
             _tocMode = false;
-            var id = _toc[_tocIndex].Id;
-            int line = FindHeadingLine(id);
-            if (line >= 0) ScrollTo(line);
+            if (_tocIndex >= 0 && _tocIndex < entries.Count)
+            {
+                var id = entries[_tocIndex].Id;
+                int line = FindHeadingLine(id);
+                if (line < 0 && UnfoldHeading(id)) line = FindHeadingLine(id);
+                if (line >= 0) ScrollTo(line);
+            }
             _dirty = true;
+            return;
+        }
+        if ((ch == 't' || ch == 'q') && _tocFilter.Length == 0) { _tocMode = false; _dirty = true; return; }
+        // Type to filter.
+        if (key.Kind == KeyKind.Char && !key.Ctrl && !key.Alt && !char.IsControl(ch))
+        {
+            _tocFilter += ch; _tocIndex = 0; _dirty = true;
         }
     }
 
@@ -540,11 +549,253 @@ public sealed partial class TerminalViewer
     /// (e.g. <c>#1-intro</c>, <c>#a--b</c>) still resolve against Markdig's default heading ids
     /// (<c>intro</c>, <c>a-b</c>). Returns -1 when nothing matches.
     /// </summary>
-    private int FindAnchorLine(string rawAnchor) => AnchorResolver.Resolve(_anchors, rawAnchor);
+    private int FindAnchorLine(string rawAnchor)
+    {
+        // Anchor indices refer to the full layout; map to the visible projection (unfolding if needed).
+        int raw = AnchorResolver.Resolve(_anchors, rawAnchor);
+        if (raw < 0 || raw >= _allLines.Count) return -1;
+        var line = _allLines[raw];
+        int idx = VisibleIndexOf(line);
+        if (idx < 0 && UnfoldContaining(raw)) idx = VisibleIndexOf(line);
+        return idx;
+    }
+
+    // ---------------- folding ----------------
+    private enum FoldOp { Toggle, Close, Open }
+
+    /// <summary>Folds/unfolds the region whose header is the active block (or that contains it).</summary>
+    private void FoldActive(FoldOp op)
+    {
+        var region = FoldRegionForActive();
+        if (region is null) { SetStatus("Nothing to fold here"); return; }
+        bool folded = _folded.Contains(region.Id);
+        bool target = op switch { FoldOp.Close => true, FoldOp.Open => false, _ => !folded };
+        if (target == folded) return;
+        lock (_stateLock)
+        {
+            if (target) _folded.Add(region.Id); else _folded.Remove(region.Id);
+            _foldOverrides[FoldKey(region)] = target;
+            // Keep the header in view.
+            var header = _allLines[region.HeaderLine];
+            Project();
+            int idx = VisibleIndexOf(header);
+            if (idx >= 0 && (idx < _scroll || idx >= _scroll + ViewportHeight)) ScrollTo(idx);
+            _forceHardClear = true;
+        }
+        SetStatus(target ? "Folded" : "Unfolded", 1);
+    }
+
+    private void FoldAll(bool fold)
+    {
+        lock (_stateLock)
+        {
+            _folded.Clear();
+            foreach (var region in _foldRegions)
+            {
+                _foldOverrides[FoldKey(region)] = fold;
+                if (fold) _folded.Add(region.Id);
+            }
+            Project();
+            _forceHardClear = true;
+        }
+        SetStatus(fold ? "All sections folded" : "All sections unfolded", 1.2);
+    }
+
+    /// <summary>The fold region headed by the active block, else the innermost region containing it.</summary>
+    private FoldRegion? FoldRegionForActive()
+    {
+        int visIdx = ActiveLineIndex();
+        if (visIdx < 0) return null;
+        var line = _lines[visIdx];
+        if (line.FoldPlaceholder != 0) return _foldRegions.FirstOrDefault(r => r.Id == line.FoldPlaceholder);
+        if (line.FoldHeader != 0) return _foldRegions.FirstOrDefault(r => r.Id == line.FoldHeader);
+        // Any line of the header block (wrapped heading title / rule) counts as the header.
+        if (line.BlockId != 0)
+        {
+            foreach (var r in _foldRegions)
+                if (r.HeaderLine < _allLines.Count && _allLines[r.HeaderLine].BlockId == line.BlockId) return r;
+        }
+        int raw = IndexOfRaw(line);
+        if (raw < 0) return null;
+        FoldRegion? best = null;
+        foreach (var r in _foldRegions)
+            if (raw >= r.StartLine && raw <= r.EndLine && (best is null || r.StartLine >= best.StartLine)) best = r;
+        return best;
+    }
+
+    /// <summary>Unfolds every folded region containing the raw line; returns true if anything changed.</summary>
+    private bool UnfoldContaining(int rawIndex)
+    {
+        bool changed = false;
+        foreach (var r in _foldRegions)
+        {
+            if (rawIndex >= r.StartLine && rawIndex <= r.EndLine && _folded.Remove(r.Id))
+            {
+                _foldOverrides[FoldKey(r)] = false;
+                changed = true;
+            }
+        }
+        if (changed) lock (_stateLock) { Project(); _forceHardClear = true; }
+        return changed;
+    }
+
+    private bool UnfoldHeading(string id)
+    {
+        for (int i = 0; i < _allLines.Count; i++)
+            if (_allLines[i].HeadingId == id) return UnfoldContaining(i);
+        return false;
+    }
+
+    // ---------------- active block & block motions ----------------
+    /// <summary>
+    /// The "active" block is the one at the top of the viewport (skipping blank separators). Block
+    /// actions — yank, fold, toggle diagram source, focus — operate on it, so there is no cursor to
+    /// manage: scroll until the block you want is at the top.
+    /// </summary>
+    private int ActiveLineIndex()
+    {
+        for (int i = _scroll; i < Math.Min(_lines.Count, _scroll + ViewportHeight); i++)
+        {
+            var l = _lines[i];
+            if (l.Spans.Count == 0 && l.FoldPlaceholder == 0) continue;
+            if (l.DiagramKey?.StartsWith("reserve:") ?? false) continue;
+            return i;
+        }
+        return _lines.Count > 0 ? Math.Clamp(_scroll, 0, _lines.Count - 1) : -1;
+    }
+
+    private BlockInfo? ActiveBlock()
+    {
+        int idx = ActiveLineIndex();
+        if (idx < 0) return null;
+        var line = _lines[idx];
+        if (line.DiagramKey?.StartsWith("reserve:") ?? false)
+        {
+            var anchor = AnchorForRow(idx);
+            if (anchor is not null) line = anchor;
+        }
+        return _blocks.TryGetValue(line.BlockId, out var info) ? info : null;
+    }
+
+    /// <summary>Lines of the active block in the visible projection.</summary>
+    private List<DisplayLine> ActiveBlockLines()
+    {
+        var info = ActiveBlock();
+        if (info is null) return [];
+        return _lines.Where(l => l.BlockId == info.Id && !(l.DiagramKey?.StartsWith("reserve:") ?? false)).ToList();
+    }
+
+    /// <summary>Moves the viewport so the n-th next/previous block start matching the predicate is at the top.</summary>
+    private void MoveToBlock(int steps, Func<DisplayLine, bool> predicate)
+    {
+        if (_lines.Count == 0) return;
+        int dir = Math.Sign(steps);
+        int remaining = Math.Abs(steps);
+        int pos = _scroll;
+        int currentBlock = _lines[Math.Clamp(ActiveLineIndex(), 0, _lines.Count - 1)].BlockId;
+        int i = pos;
+        while (remaining > 0)
+        {
+            int next = -1;
+            if (dir > 0)
+            {
+                for (int j = i + 1; j < _lines.Count; j++)
+                {
+                    if (!IsBlockStart(j) || !predicate(_lines[j])) continue;
+                    next = j; break;
+                }
+            }
+            else
+            {
+                for (int j = i - 1; j >= 0; j--)
+                {
+                    if (!IsBlockStart(j) || !predicate(_lines[j])) continue;
+                    next = j; break;
+                }
+            }
+            if (next < 0) break;
+            i = next;
+            remaining--;
+        }
+        if (i == pos) { SetStatus(dir > 0 ? "No further block" : "No previous block", 1); return; }
+        ScrollTo(i);
+        _ = currentBlock;
+    }
+
+    private bool IsBlockStart(int idx)
+    {
+        var l = _lines[idx];
+        if (l.BlockId == 0 || l.Spans.Count == 0) return false;
+        if (l.DiagramKey?.StartsWith("reserve:") ?? false) return false;
+        return idx == 0 || _lines[idx - 1].BlockId != l.BlockId;
+    }
+
+    // ---------------- yank ----------------
+    /// <summary>
+    /// Copies the active block's content without any frame chrome: code without gutters/line
+    /// numbers, a diagram's source, a table as tab-separated text, otherwise the block's visible
+    /// text with bullets/quote bars stripped.
+    /// </summary>
+    private void YankActiveBlock()
+    {
+        var info = ActiveBlock();
+        if (info is null) { SetStatus("Nothing to copy here"); return; }
+        string text = BlockText(info);
+        if (string.IsNullOrEmpty(text)) { SetStatus("Nothing to copy here"); return; }
+        Clipboard.Copy(text, _screen);
+        int n = text.Split('\n').Length;
+        SetStatus($"Copied {info.Kind.ToString().ToLowerInvariant()} ({n} line{(n == 1 ? "" : "s")})", 2);
+    }
+
+    private string BlockText(BlockInfo info)
+    {
+        if (info.Text is { Length: > 0 } && info.Kind is BlockKind.Code or BlockKind.Diagram or BlockKind.Math or BlockKind.Image)
+            return info.Text;
+        var lines = _allLines.Where(l => l.BlockId == info.Id).ToList();
+        var sb = new StringBuilder();
+        foreach (var l in lines)
+        {
+            // Skip rule rows and strip gutters (bullets, quote bars, table rules) — keep the words.
+            var t = l.PlainText;
+            if (t.Length > 0 && t.All(c => c is '─' or '━' or '┬' or '┴' or '┼' or '┌' or '┐' or '└' or '┘' or '├' or '┤' or ' ')) continue;
+            t = t.Replace("│", "\t").Replace("▌", "").TrimStart(' ', '•', '◦', '▪', '▸', '▾', '●', '◗', '·', '☑', '☐');
+            sb.Append(t.Trim()).Append('\n');
+        }
+        return sb.ToString().TrimEnd('\n');
+    }
+
+    private void YankDocument()
+    {
+        Clipboard.Copy(_currentMarkdown, _screen);
+        SetStatus("Copied the whole document (Markdown source)", 2);
+    }
+
+    // ---------------- diagram source toggle ----------------
+    private readonly HashSet<string> _showSource = [];
+
+    /// <summary>Toggles between a diagram's rendered image and its source code (`s`).</summary>
+    private void ToggleDiagramSource()
+    {
+        var info = ActiveBlock();
+        if (info is null || info.Kind != BlockKind.Diagram || info.DiagramKey is null) { SetStatus("Not on a diagram (scroll it to the top of the screen)"); return; }
+        lock (_stateLock)
+        {
+            if (!_showSource.Remove(info.DiagramKey)) _showSource.Add(info.DiagramKey);
+            Project();
+            ClearDiagramCaches();
+            _forceHardClear = true;
+        }
+    }
 
     // ---------------- links & navigation ----------------
+    private int _activeLinkOrdinal = -1;   // Tab-cycled link (index into _links), -1 = none
+
     private void FollowFirstVisibleLink()
     {
+        if (_activeLinkOrdinal >= 0 && _activeLinkOrdinal < _links.Count) { FollowLink(_links[_activeLinkOrdinal]); return; }
+        // A fold placeholder at the top: Enter expands it.
+        int top = ActiveLineIndex();
+        if (top >= 0 && _lines[top].FoldPlaceholder != 0) { FoldActive(FoldOp.Open); return; }
         // Find the first link occurring on a visible line.
         for (int row = 0; row < ViewportHeight; row++)
         {
@@ -559,15 +810,95 @@ public sealed partial class TerminalViewer
                 }
             }
         }
-        SetStatus("No link on screen (use number keys for links)");
+        SetStatus("No link on screen (f: link hints)");
     }
 
-    private void FollowLinkByOrdinal(int ordinal)
+    /// <summary>Tab/Shift+Tab: steps the active link through the links visible on screen.</summary>
+    private void CycleLink(int step)
     {
-        // The superscript markers show each link's document id (1..9); follow that link directly.
-        int id = ordinal - 1;
-        if (id >= 0 && id < _links.Count) FollowLink(_links[id]);
-        else SetStatus($"No link {ordinal}");
+        var visible = VisibleLinkIds();
+        if (visible.Count == 0) { SetStatus("No links on screen"); return; }
+        int pos = visible.IndexOf(_activeLinkOrdinal);
+        pos = pos < 0 ? (step > 0 ? 0 : visible.Count - 1) : ((pos + step) % visible.Count + visible.Count) % visible.Count;
+        _activeLinkOrdinal = visible[pos];
+        SetStatus(Truncate(_links[_activeLinkOrdinal].Url, Math.Max(20, _screen.Width - 20)), 4);
+        _dirty = true;
+    }
+
+    private List<int> VisibleLinkIds()
+    {
+        var ids = new List<int>();
+        for (int row = 0; row < ViewportHeight; row++)
+        {
+            int lineIndex = _scroll + row;
+            if (lineIndex >= _lines.Count) break;
+            foreach (var span in _lines[lineIndex].Spans)
+                if (span.LinkId is { } id && id < _links.Count && !ids.Contains(id)) ids.Add(id);
+            if (_lines[lineIndex].ImageLinkId is { } il && il < _links.Count && !ids.Contains(il)) ids.Add(il);
+        }
+        return ids;
+    }
+
+    // ---- link hints (vimium-style) ----
+    private bool _hintMode;
+    private bool _hintCopyOnly;
+    private string _hintTyped = "";
+    private readonly Dictionary<string, int> _hints = new(StringComparer.OrdinalIgnoreCase);   // label -> link id
+
+    private void EnterHintMode(bool copyOnly)
+    {
+        var ids = VisibleLinkIds();
+        if (ids.Count == 0) { SetStatus("No links on screen"); return; }
+        _hints.Clear();
+        var labels = HintLabels(ids.Count);
+        for (int i = 0; i < ids.Count; i++) _hints[labels[i]] = ids[i];
+        _hintMode = true;
+        _hintCopyOnly = copyOnly;
+        _hintTyped = "";
+        _dirty = true;
+    }
+
+    /// <summary>Generates short home-row labels: single letters first, then two-letter combinations.</summary>
+    internal static List<string> HintLabels(int count)
+    {
+        const string alphabet = "asdfghjklqwertyuiopzxcvbnm";
+        var labels = new List<string>(count);
+        if (count <= alphabet.Length)
+        {
+            for (int i = 0; i < count; i++) labels.Add(alphabet[i].ToString());
+            return labels;
+        }
+        for (int i = 0; i < alphabet.Length && labels.Count < count; i++)
+            for (int j = 0; j < alphabet.Length && labels.Count < count; j++)
+                labels.Add(alphabet[i].ToString() + alphabet[j]);
+        return labels;
+    }
+
+    private void HandleHintKey(KeyEvent key)
+    {
+        if (key.Kind == KeyKind.Escape || IsMouse(key)) { _hintMode = false; _dirty = true; return; }
+        if (key.Kind == KeyKind.Backspace) { if (_hintTyped.Length > 0) _hintTyped = _hintTyped[..^1]; _dirty = true; return; }
+        if (key.Kind != KeyKind.Char || key.Ctrl || key.Alt) return;
+        _hintTyped += char.ToLowerInvariant(key.Char);
+        if (_hints.TryGetValue(_hintTyped, out var id))
+        {
+            _hintMode = false;
+            _dirty = true;
+            var link = _links[id];
+            if (_hintCopyOnly)
+            {
+                Clipboard.Copy(link.Url, _screen);
+                SetStatus("Copied link: " + Truncate(link.Url, Math.Max(20, _screen.Width - 20)), 3);
+            }
+            else FollowLink(link);
+            return;
+        }
+        if (!_hints.Keys.Any(k => k.StartsWith(_hintTyped, StringComparison.OrdinalIgnoreCase)))
+        {
+            _hintMode = false; _dirty = true;
+            SetStatus("No such hint", 1);
+        }
+        _dirty = true;
     }
 
     /// <summary>
@@ -585,6 +916,23 @@ public sealed partial class TerminalViewer
         if (lineIndex < 0 || lineIndex >= _lines.Count) return;
         var line = _lines[lineIndex];
         screenCol -= ContentOffset;   // content may be centred when a reading width is set
+
+        // Clicking a fold placeholder or a foldable header toggles the fold.
+        if (line.FoldPlaceholder != 0 || line.FoldHeader != 0)
+        {
+            var region = _foldRegions.FirstOrDefault(r => r.Id == (line.FoldPlaceholder != 0 ? line.FoldPlaceholder : line.FoldHeader));
+            if (region is not null && (line.FoldPlaceholder != 0 || screenCol < 2))
+            {
+                lock (_stateLock)
+                {
+                    if (!_folded.Remove(region.Id)) _folded.Add(region.Id);
+                    _foldOverrides[FoldKey(region)] = _folded.Contains(region.Id);
+                    Project();
+                    _forceHardClear = true;
+                }
+                return;
+            }
+        }
 
         // 1) Click directly on a link span (text links and clickable image captions). Columns are
         //    measured in display width (wide/emoji glyphs occupy two cells), matching how the line is
@@ -637,11 +985,12 @@ public sealed partial class TerminalViewer
 
     private void FollowLink(TerminalLink link, bool bypassConfirm = false)
     {
+        _activeLinkOrdinal = -1;
         var resolved = _resolver.Resolve(link.Url, _currentPath);
         switch (resolved.Kind)
         {
             case LinkKind.External:
-                if (bypassConfirm)
+                if (bypassConfirm || !_options.ConfirmExternalLinks)
                 {
                     // Ctrl+click (or another explicit gesture) is a deliberate action, so open the
                     // link straight away without the confirmation prompt.
@@ -657,11 +1006,20 @@ public sealed partial class TerminalViewer
                 _dirty = true;
                 break;
             case LinkKind.LocalFile when resolved.AbsolutePath is not null:
-                _ = LoadAsync(resolved.AbsolutePath, pushHistory: true).ContinueWith(_ => { _scroll = 0; });
+                NavigateTo(resolved.AbsolutePath, resolved.Anchor);
                 break;
             case LinkKind.Anchor when resolved.Anchor is not null:
                 int line = FindAnchorLine(resolved.Anchor);
                 if (line >= 0) ScrollTo(line); else SetStatus("Anchor not found");
+                break;
+            case LinkKind.Image when resolved.AbsolutePath is not null:
+                // A link straight to an image: show it in the focus view.
+                OpenImageFile(resolved.AbsolutePath);
+                break;
+            case LinkKind.Unknown when resolved.AbsolutePath is not null && File.Exists(resolved.AbsolutePath):
+                // Other local files (.txt, .pdf, …) open with the OS default handler.
+                OpenUrl(resolved.AbsolutePath);
+                SetStatus("Opened: " + Path.GetFileName(resolved.AbsolutePath));
                 break;
             default:
                 SetStatus("Cannot open: " + link.Url);
@@ -669,18 +1027,66 @@ public sealed partial class TerminalViewer
         }
     }
 
+    // Per-file scroll memory so Back/Forward return to where you were.
+    private readonly Dictionary<string, int> _scrollMemory = new(StringComparer.OrdinalIgnoreCase);
+
+    private void NavigateTo(string absolutePath, string? anchor)
+    {
+        _scrollMemory[_currentPath] = _scroll;
+        _ = LoadAsync(absolutePath, pushHistory: true).ContinueWith(_ =>
+        {
+            lock (_stateLock)
+            {
+                _scroll = 0;
+                if (anchor is not null)
+                {
+                    int line = FindAnchorLine(anchor);
+                    if (line >= 0) _scroll = Math.Min(line, Math.Max(0, _lines.Count - 1));
+                }
+                _dirty = true;
+            }
+        });
+    }
+
     private void GoBack()
     {
         if (_historyIndex <= 0) { SetStatus("No previous page"); return; }
+        _scrollMemory[_currentPath] = _scroll;
         _historyIndex--;
-        _ = LoadAsync(_history[_historyIndex], pushHistory: false).ContinueWith(_ => { _scroll = 0; });
+        var target = _history[_historyIndex];
+        _ = LoadAsync(target, pushHistory: false).ContinueWith(_ => RestoreScroll(target));
     }
 
     private void GoForward()
     {
         if (_historyIndex >= _history.Count - 1) { SetStatus("No next page"); return; }
+        _scrollMemory[_currentPath] = _scroll;
         _historyIndex++;
-        _ = LoadAsync(_history[_historyIndex], pushHistory: false).ContinueWith(_ => { _scroll = 0; });
+        var target = _history[_historyIndex];
+        _ = LoadAsync(target, pushHistory: false).ContinueWith(_ => RestoreScroll(target));
+    }
+
+    private void RestoreScroll(string path)
+    {
+        lock (_stateLock)
+        {
+            _scroll = _scrollMemory.TryGetValue(path, out var s) ? Math.Clamp(s, 0, Math.Max(0, _lines.Count - 1)) : 0;
+            _dirty = true;
+        }
+    }
+
+    private void OpenImageFile(string absolutePath)
+    {
+        var url = Path.GetRelativePath(Path.GetDirectoryName(_currentPath) ?? ".", absolutePath).Replace('\\', '/');
+        var key = MarkdownTerminalRenderer.ImageKey(url);
+        var docPath = _currentPath;
+        _ = Task.Run(async () =>
+        {
+            var result = await _imageLoader.LoadAsync(url, docPath);
+            lock (_stateLock) { _diagramResults[key] = result; }
+            if (result.Status == DiagramStatus.Ready) OpenFocusViewForKey(key);
+            else SetStatus("Image load failed: " + result.Error);
+        });
     }
 
     // ---------------- theme / appearance ----------------
@@ -860,9 +1266,20 @@ public sealed partial class TerminalViewer
         return best;
     }
 
+    /// <summary>Ordered keys of all ready images/diagrams in document order (for n/p in the focus view).</summary>
+    private List<string> ReadyImageKeysInOrder()
+    {
+        var keys = new List<string>();
+        foreach (var line in _lines)
+            if (line.DiagramKey is { } k && !k.StartsWith("reserve:") && !keys.Contains(k)
+                && _diagramResults.TryGetValue(k, out var r) && r.Status == DiagramStatus.Ready && r.Png is not null)
+                keys.Add(k);
+        return keys;
+    }
+
     private void HandleFocusKey(KeyEvent key)
     {
-        char ch = key.Kind == KeyKind.Char ? char.ToLowerInvariant(key.Char) : '\0';
+        char ch = key.Kind == KeyKind.Char ? key.Char : '\0';
 
         switch (key.Kind)
         {
@@ -889,9 +1306,28 @@ public sealed partial class TerminalViewer
             case 'k': FocusPan(-2, 0); return;
             case 'l': FocusPan(0, 4); return;
             case 'h': FocusPan(0, -4); return;
+            case 'n': case 'p': FocusStep(ch == 'n' ? 1 : -1); return;
+            case 'y': if (_focusKey is not null && _diagramResults.TryGetValue(_focusKey, out var fr) && fr.Png is not null) { CopyFocusedSource(); } return;
             case 'o': if (_focusKey is not null) OpenImageExternally(_focusKey, browser: false); return;
             case 'b': if (_focusKey is not null) OpenImageExternally(_focusKey, browser: true); return;
         }
+    }
+
+    private void FocusStep(int dir)
+    {
+        var keys = ReadyImageKeysInOrder();
+        if (keys.Count == 0 || _focusKey is null) return;
+        int i = keys.IndexOf(_focusKey);
+        int next = ((i + dir) % keys.Count + keys.Count) % keys.Count;
+        if (keys[next] == _focusKey) return;
+        OpenFocusViewForKey(keys[next]);
+    }
+
+    private void CopyFocusedSource()
+    {
+        if (_focusKey is null) return;
+        if (_pendingDiagrams.TryGetValue(_focusKey, out var req)) { Clipboard.Copy(req.Source, _screen); SetStatus("Copied diagram source", 2); return; }
+        if (_pendingImages.TryGetValue(_focusKey, out var url)) { Clipboard.Copy(url, _screen); SetStatus("Copied image URL", 2); }
     }
 
     private void FocusZoom(int delta)
@@ -1087,4 +1523,30 @@ public sealed partial class TerminalViewer
         }
         catch { /* ignore */ }
     }
+
+    private static string Truncate(string s, int max) =>
+        s.Length <= max ? s : TextWidth.TrimToWidth(s, Math.Max(1, max - 1)) + "…";
+
+    // ---------------- stubs filled in by later phases ----------------
+    private void ToggleTocSidebar() => SetStatus("TOC sidebar: coming in the next update");
+    private void EnterCommandMode() { _commandMode = true; _commandText = ""; _dirty = true; }
+    private bool _commandMode;
+    private string _commandText = "";
+    private void HandleCommandKey(KeyEvent key)
+    {
+        if (key.Kind == KeyKind.Escape) { _commandMode = false; _dirty = true; return; }
+        if (key.Kind == KeyKind.Enter) { _commandMode = false; _dirty = true; RunCommand(_commandText.Trim()); return; }
+        if (key.Kind == KeyKind.Backspace) { if (_commandText.Length > 0) _commandText = _commandText[..^1]; else _commandMode = false; _dirty = true; return; }
+        if (key.Kind == KeyKind.Paste && key.Text is { } t) { _commandText += t.Split('\n')[0]; _dirty = true; return; }
+        if (key.Kind == KeyKind.Char && !key.Ctrl && !key.Alt && !char.IsControl(key.Char)) { _commandText += key.Char; _dirty = true; }
+    }
+    private void RunCommand(string command) => SetStatus("Unknown command: " + command);
+    private void ExportPrompt() => SetStatus("Export: coming in the next update");
+    private void OpenQuickOpen() => SetStatus("Quick-open: coming in a later update");
+    private void OpenProjectSearch() => SetStatus("Project search: coming in a later update");
+    private void StepFile(int step) => SetStatus("Multi-file navigation: coming in a later update");
+    private void SetBookmarkPrompt() => SetStatus("Bookmarks: coming in a later update");
+    private void GoBookmarkPrompt() => SetStatus("Bookmarks: coming in a later update");
+    private void ToggleWatch() => SetStatus("Watch toggle: coming in the next update");
+    private void ToggleFollow() => SetStatus("Follow mode: coming in the next update");
 }

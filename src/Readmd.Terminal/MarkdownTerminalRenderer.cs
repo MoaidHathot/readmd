@@ -31,13 +31,18 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
     public sealed record RenderResult(
         IReadOnlyList<DisplayLine> Lines,
         IReadOnlyList<TerminalLink> Links,
-        IReadOnlyDictionary<string, int> Anchors);
+        IReadOnlyDictionary<string, int> Anchors,
+        IReadOnlyDictionary<int, BlockInfo> Blocks,
+        IReadOnlyList<FoldRegion> Folds);
 
     public RenderResult Render(MarkdownObject document, IReadOnlyList<TocEntry>? toc = null, FrontMatter? frontMatter = null, string? source = null)
     {
         _lines.Clear();
         _links.Clear();
         _anchors.Clear();
+        _blocks.Clear();
+        _folds.Clear();
+        _openDetails.Clear();
         _abbreviationsShown.Clear();
         _source = source;
         _detailsIndent = 0;
@@ -49,8 +54,90 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
             foreach (var block in container)
                 RenderBlock(block, TopLevelIndent);
         }
+        while (_openDetails.Count > 0) CloseDetails();
         TrimTrailingBlank();
-        return new RenderResult(_lines, _links, _anchors);
+        ComputeHeadingFolds();
+        return new RenderResult(_lines, _links, _anchors, _blocks, _folds);
+    }
+
+    // ---------------- block identity & folds ----------------
+    private readonly Dictionary<int, BlockInfo> _blocks = [];
+    private readonly List<FoldRegion> _folds = [];
+    private int _nextFoldId;
+
+    /// <summary>
+    /// Assigns a fresh block id (and kind) to every line emitted since <paramref name="start"/> that
+    /// isn't already owned by a nested block, and records the block's metadata. Blank separator lines
+    /// stay unowned. Returns the id, or 0 when nothing was tagged.
+    /// </summary>
+    private int TagBlock(int start, BlockKind kind, int sourceLine, string? text = null, string? diagramKey = null, int headingLevel = 0, string? language = null)
+    {
+        int id = 0;
+        for (int i = start; i < _lines.Count; i++)
+        {
+            var line = _lines[i];
+            if (line.BlockId != 0 || line.Spans.Count == 0) continue;
+            if (id == 0) id = ++_blockCounter;
+            line.BlockId = id;
+            line.Kind = kind;
+        }
+        if (id != 0) _blocks[id] = new BlockInfo(id, kind, sourceLine, text, diagramKey, headingLevel, language);
+        return id;
+    }
+
+    private void RegisterBlock(int id, BlockKind kind, int sourceLine, string? text = null, string? diagramKey = null, int headingLevel = 0, string? language = null)
+    {
+        if (id != 0) _blocks[id] = new BlockInfo(id, kind, sourceLine, text, diagramKey, headingLevel, language);
+    }
+
+    /// <summary>Heading sections are foldable: a heading hides everything up to the next heading of the same or a higher level.</summary>
+    private void ComputeHeadingFolds()
+    {
+        for (int i = 0; i < _lines.Count; i++)
+        {
+            int level = _lines[i].HeadingLevel;
+            if (level == 0) continue;
+            // The heading block itself may span several lines (wrapped title, H1/H2 rule).
+            int headerBlock = _lines[i].BlockId;
+            int bodyStart = i + 1;
+            while (bodyStart < _lines.Count && _lines[bodyStart].BlockId == headerBlock) bodyStart++;
+            int end = bodyStart;
+            while (end < _lines.Count && !(_lines[end].HeadingLevel > 0 && _lines[end].HeadingLevel <= level)) end++;
+            end--;   // inclusive
+            while (end >= bodyStart && _lines[end].Spans.Count == 0) end--;
+            if (end < bodyStart) continue;   // nothing to fold
+            int id = ++_nextFoldId;
+            _lines[i].FoldHeader = id;
+            _folds.Add(new FoldRegion(id, i, bodyStart, end, DefaultOpen: true, IsHeading: true));
+        }
+    }
+
+    // <details> blocks span several Markdig blocks (the opening HTML, Markdown body, the closing HTML);
+    // track the open ones so the body can be indented and folded as a unit.
+    private readonly Stack<(int FoldId, int HeaderLine, bool Open)> _openDetails = new();
+
+    private void OpenDetails(bool open) => _openDetails.Push((++_nextFoldId, -1, open));
+
+    private void SetDetailsHeader(int headerLine)
+    {
+        if (_openDetails.Count == 0) return;
+        var top = _openDetails.Pop();
+        _openDetails.Push((top.FoldId, headerLine, top.Open));
+        _lines[headerLine].FoldHeader = top.FoldId;
+    }
+
+    private void CloseDetails()
+    {
+        if (_openDetails.Count == 0) return;
+        var (id, header, open) = _openDetails.Pop();
+        _detailsDepth = Math.Max(0, _detailsDepth - 1);
+        _detailsIndent = Math.Max(0, _detailsIndent - 2);
+        if (header < 0) return;
+        int start = header + 1;
+        int end = _lines.Count - 1;
+        while (end >= start && _lines[end].Spans.Count == 0) end--;
+        if (end < start) return;
+        _folds.Add(new FoldRegion(id, header, start, end, DefaultOpen: open, IsHeading: false));
     }
 
     /// <summary>Maps an anchor id to the display line it should scroll to. Empty ids are ignored and
@@ -95,6 +182,7 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
                      || !string.IsNullOrWhiteSpace(author) || !string.IsNullOrWhiteSpace(date)
                      || tags is { Count: > 0 };
         if (!hasAny) return;
+        int start = _lines.Count;
 
         if (!string.IsNullOrWhiteSpace(title))
         {
@@ -118,11 +206,13 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
         var rule = new DisplayLine();
         rule.Spans.Add(new StyledSpan(new string('─', Math.Max(8, _width - 1)), theme.Rule));
         _lines.Add(rule);
+        TagBlock(start, BlockKind.FrontMatter, 1, text: title);
         AddBlank();
     }
 
     private void RenderBlock(Block block, int indent)
     {
+        int start = _lines.Count;
         switch (block)
         {
             case HeadingBlock heading: RenderHeading(heading); break;
@@ -151,7 +241,27 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
                     EmitWrapped(InlineToSpans(leaf.Inline, theme.Text), indent);
                 break;
         }
+        // Anything the specific emitter didn't claim belongs to this block (e.g. the paragraph text
+        // of a quote, a table, a rule). Nested blocks keep their own ids.
+        TagBlock(start, KindOf(block), block.Line + 1, text: block is MathBlock m ? m.Lines.ToString() : null);
     }
+
+    private static BlockKind KindOf(Block block) => block switch
+    {
+        HeadingBlock => BlockKind.Heading,
+        ParagraphBlock => BlockKind.Paragraph,
+        ListBlock or ListItemBlock => BlockKind.ListItem,
+        AlertBlock => BlockKind.Alert,
+        QuoteBlock => BlockKind.Quote,
+        MathBlock => BlockKind.Math,
+        FencedCodeBlock or CodeBlock => BlockKind.Code,
+        Table => BlockKind.Table,
+        ThematicBreakBlock => BlockKind.Rule,
+        Markdig.Syntax.HtmlBlock => BlockKind.Html,
+        Markdig.Extensions.Footnotes.FootnoteGroup => BlockKind.Footnote,
+        Markdig.Extensions.CustomContainers.CustomContainer => BlockKind.Quote,
+        _ => BlockKind.Paragraph,
+    };
 
     // ---------------- headings ----------------
     private void RenderHeading(HeadingBlock heading)
@@ -172,6 +282,7 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
         EnsureBlankBefore();
         // The heading line is emitted next (at _lines.Count), for both the H1 and H2+ paths below.
         RegisterAnchor(id, _lines.Count);
+        int start = _lines.Count;
 
         if (level <= 1)
         {
@@ -183,29 +294,31 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
             var rule = new DisplayLine();
             rule.Spans.Add(new StyledSpan(new string('━', Math.Max(8, Math.Min(_width - 1, TextWidth.Of(titleText) + 4))), theme.H1));
             _lines.Add(rule);
-            AddBlank();
-            return;
         }
-
-        // H2/H3+: a colored marker + bold title; H2 also gets a thin underline. Each level has its
-        // own glyph so H4/H5/H6 remain distinguishable.
-        var (marker, color, extraStyle) = level switch
+        else
         {
-            2 => ("▌ ", theme.H2, CellStyle.None),
-            3 => ("● ", theme.H3, CellStyle.None),
-            4 => ("◗ ", theme.Heading, CellStyle.None),
-            5 => ("▸ ", theme.Heading, CellStyle.None),
-            _ => ("· ", theme.Muted, CellStyle.Italic),
-        };
-        var spans = new List<StyledSpan> { new(marker, color, CellStyle.Bold) };
-        spans.AddRange(spansFor(color, CellStyle.Bold | extraStyle));
-        EmitWrapped(spans, 0, headingId: id, sourceLine: sourceLine);
-        if (level == 2)
-        {
-            var rule = new DisplayLine();
-            rule.Spans.Add(new StyledSpan(new string('─', Math.Max(8, _width - 1)), theme.Rule));
-            _lines.Add(rule);
+            // H2/H3+: a colored marker + bold title; H2 also gets a thin underline. Each level has its
+            // own glyph so H4/H5/H6 remain distinguishable.
+            var (marker, color, extraStyle) = level switch
+            {
+                2 => ("▌ ", theme.H2, CellStyle.None),
+                3 => ("● ", theme.H3, CellStyle.None),
+                4 => ("◗ ", theme.Heading, CellStyle.None),
+                5 => ("▸ ", theme.Heading, CellStyle.None),
+                _ => ("· ", theme.Muted, CellStyle.Italic),
+            };
+            var spans = new List<StyledSpan> { new(marker, color, CellStyle.Bold) };
+            spans.AddRange(spansFor(color, CellStyle.Bold | extraStyle));
+            EmitWrapped(spans, 0, headingId: id, sourceLine: sourceLine);
+            if (level == 2)
+            {
+                var rule = new DisplayLine();
+                rule.Spans.Add(new StyledSpan(new string('─', Math.Max(8, _width - 1)), theme.Rule));
+                _lines.Add(rule);
+            }
         }
+        _lines[start].HeadingLevel = Math.Max(1, level);
+        TagBlock(start, BlockKind.Heading, sourceLine, text: titleText, headingLevel: Math.Max(1, level));
         AddBlank();
     }
 
@@ -363,6 +476,7 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
     {
         if (_toc.Count == 0) return;
         EnsureBlankBefore();
+        int start = _lines.Count;
         foreach (var entry in _toc)
         {
             var line = new DisplayLine();
@@ -372,6 +486,7 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
             line.Spans.Add(new StyledSpan(entry.Title, theme.Link, CellStyle.Underline, id));
             _lines.Add(line);
         }
+        TagBlock(start, BlockKind.Toc, 0);
         AddBlank();
     }
 
@@ -694,13 +809,20 @@ public sealed partial class MarkdownTerminalRenderer(TerminalTheme theme, int wi
 
     private static readonly string[] SuperscriptDigits = { "⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹" };
 
-    /// <summary>Appends a small superscript number after a link so users know which key opens it.</summary>
+    /// <summary>
+    /// Optionally appends a small superscript ordinal after a link. Off by default: links are
+    /// followed via hint mode (<c>f</c>), Tab cycling, or clicks, so the markers only add noise.
+    /// </summary>
     private void AppendLinkMarker(List<StyledSpan> spans, int id)
     {
-        int ordinal = id + 1;            // links are followed by pressing 1..9
+        if (!LinkMarkers) return;
+        int ordinal = id + 1;
         if (ordinal < 1 || ordinal > 9) return;
         spans.Add(new StyledSpan(SuperscriptDigits[ordinal], theme.Accent, CellStyle.Bold, id));
     }
+
+    /// <summary>Show superscript ordinals after the first nine links (legacy 1–9 navigation aid).</summary>
+    public bool LinkMarkers { get; init; }
 
     /// <summary>Renders a footnote reference ([^1]) as a superscript number.</summary>
     private void AppendFootnoteRef(Markdig.Extensions.Footnotes.FootnoteLink footnote, List<StyledSpan> spans, CellStyle style, int? linkId)

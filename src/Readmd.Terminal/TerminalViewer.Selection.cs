@@ -145,8 +145,12 @@ public sealed partial class TerminalViewer
 /// </summary>
 internal static class Clipboard
 {
+    /// <summary>Test seam: when set, copies go here instead of the system clipboard.</summary>
+    internal static Action<string>? TestSink;
+
     public static void Copy(string text, AnsiScreen screen)
     {
+        if (TestSink is { } sink) { sink(text); return; }
         bool win32 = false;
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {

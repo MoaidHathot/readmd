@@ -72,8 +72,10 @@ public class RenderingRegressionTests
         Assert.All(h1Lines, l => Assert.True(l.Length <= 40, $"H1 line exceeds width: '{l}'"));
         Assert.Contains(h1Lines, l => l.Contains("readmd"));
         Assert.Contains(h1Lines, l => l.Contains("GitHub"));
-        // The link inside the H1 is registered for navigation (superscript marker ¹ follows it).
-        Assert.Contains(h1Lines, l => l.Contains("GitHub¹"));
+        // The link inside the H1 is registered for navigation.
+        var (lines2, links, _) = Render.Full(md, width: 40);
+        Assert.Contains(links, l => l.Url == "https://example.com");
+        Assert.Contains(lines2.Take(h1Lines.Count), l => l.Spans.Any(s => s.Text.Contains("GitHub") && s.LinkId is not null));
     }
 
     [Fact]

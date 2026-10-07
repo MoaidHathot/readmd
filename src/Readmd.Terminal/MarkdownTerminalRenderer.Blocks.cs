@@ -129,6 +129,7 @@ public sealed partial class MarkdownTerminalRenderer
             var marker = list.IsOrdered ? FormatListNumber(number, list.BulletType) + delimiter + " " : bullet;
             number++;
             int childIndent = indent + TextWidth.Of(marker);
+            int itemStart = _lines.Count;
             bool firstChild = true;
             foreach (var child in listItem)
             {
@@ -153,6 +154,7 @@ public sealed partial class MarkdownTerminalRenderer
                     RenderBlock(child, childIndent);
                 }
             }
+            TagBlock(itemStart, BlockKind.ListItem, listItem.Line + 1);
         }
         _listDepth--;
         AddBlank();
@@ -465,6 +467,19 @@ public sealed partial class MarkdownTerminalRenderer
         }
         else spans = CodeHighlighter.Highlight(code, language, Theme);
         EmitCodeBlock(spans, indent, language, blockId, options);
+        RegisterBlock(blockId, BlockKind.Code, 0, text: code, language: language);
+    }
+
+    /// <summary>Lays out <paramref name="code"/> as a framed, highlighted code block and returns its lines
+    /// (used by the viewer to show diagram source inline). Highlighting is synchronous here.</summary>
+    public List<DisplayLine> RenderCodeLines(string code, string language, int indent)
+    {
+        _lines.Clear();
+        var spans = CodeHighlighter.Highlight(ExpandTabs(code), language, Theme);
+        EmitCodeBlock(spans, indent, language, ++_blockCounter);
+        var result = new List<DisplayLine>(_lines);
+        _lines.Clear();
+        return result;
     }
 
     /// <summary>When true, code blocks are emitted unhighlighted and queued for background highlighting.</summary>
@@ -502,7 +517,9 @@ public sealed partial class MarkdownTerminalRenderer
         var lines = text.Split('\n')
             .Select(raw => (List<StyledSpan>)[new StyledSpan(raw, Theme.Text)])
             .ToList();
-        EmitCodeBlock(lines, indent, language: "", ++_blockCounter);
+        int id = ++_blockCounter;
+        EmitCodeBlock(lines, indent, language: "", id);
+        RegisterBlock(id, BlockKind.Code, code.Line + 1, text: text);
         AddBlank();
     }
 
@@ -613,7 +630,7 @@ public sealed partial class MarkdownTerminalRenderer
 
         // Tag every row of the block so a background highlighter can restyle it in place.
         if (blockId != 0)
-            for (int i = firstLine; i < _lines.Count; i++) _lines[i].BlockId = blockId;
+            for (int i = firstLine; i < _lines.Count; i++) { _lines[i].BlockId = blockId; _lines[i].Kind = BlockKind.Code; }
     }
 
     /// <summary>Wraps a code line's styled spans to <paramref name="width"/> display columns at
@@ -770,6 +787,7 @@ public sealed partial class MarkdownTerminalRenderer
         anchor.Spans.Add(new StyledSpan(label + " diagram", Theme.Muted, CellStyle.Italic));
         _lines.Add(anchor);
         _pendingDiagrams[request.Key] = request;
+        TagBlock(_lines.Count - 1, BlockKind.Diagram, 0, text: request.Source, diagramKey: request.Key, language: kind.ToString().ToLowerInvariant());
         AddBlank();
     }
 
@@ -821,6 +839,7 @@ public sealed partial class MarkdownTerminalRenderer
         }
         _lines.Add(anchor);
         _pendingImages[key] = url;
+        TagBlock(_lines.Count - 1, BlockKind.Image, 0, text: url, diagramKey: key);
         AddBlank();
     }
 
@@ -847,6 +866,7 @@ public sealed partial class MarkdownTerminalRenderer
         anchor.Spans.Add(new StyledSpan($"{images.Count} images", Theme.Muted, CellStyle.Italic));
         _lines.Add(anchor);
         _pendingImageGroups[groupKey] = urls;
+        TagBlock(_lines.Count - 1, BlockKind.Image, 0, text: string.Join("\n", urls), diagramKey: groupKey);
         AddBlank();
     }
 

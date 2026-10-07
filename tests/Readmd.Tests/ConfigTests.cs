@@ -24,7 +24,18 @@ public class ConfigTests
         Assert.NotNull(cfg.Themes);
         Assert.True(cfg.Themes!.ContainsKey("mytheme"));
         Assert.Equal("#ff0000", cfg.Themes["mytheme"].H1);
-        Assert.Equal("x", cfg.Keys!["quit"]);
+        Assert.Equal(["x"], cfg.Keys!["quit"]);
+    }
+
+    [Fact]
+    public void Keys_accept_a_list_of_chords()
+    {
+        var cfg = ReadmdConfig.Parse("""{ "keys": { "quit": ["x", "ctrl+q"], "top": "gg" } }""");
+        Assert.Equal(["x", "ctrl+q"], cfg.Keys!["quit"]);
+        var km = KeyMap.FromConfig(cfg.Keys);
+        Assert.Equal(EditorAction.Quit, km.Resolve("x"));
+        Assert.Equal(EditorAction.Quit, km.Resolve("ctrl+q"));
+        Assert.Equal(EditorAction.None, km.Resolve("q"));
     }
 
     [Fact]
@@ -116,5 +127,46 @@ public class KeyMapTests
         var km = KeyMap.FromConfig(new Dictionary<string, string> { ["frobnicate"] = "z" });
         Assert.Equal(EditorAction.None, km.Resolve('z'));
         Assert.Equal(EditorAction.Quit, km.Resolve('q')); // defaults intact
+    }
+
+    [Theory]
+    [InlineData("gg", "g g")]
+    [InlineData("ctrl+d", "ctrl+d")]
+    [InlineData("Ctrl+D", "ctrl+d")]
+    [InlineData("<C-d>", "ctrl+d")]
+    [InlineData("shift+tab", "shift+tab")]
+    [InlineData("]]", "] ]")]
+    [InlineData("za", "z a")]
+    [InlineData("space", "space")]
+    [InlineData("alt+left", "alt+left")]
+    [InlineData("G", "G")]
+    [InlineData("shift+g", "G")]
+    public void Chord_specs_normalize(string spec, string expected)
+    {
+        Assert.Equal(expected, KeyMap.TryNormalizeChord(spec));
+    }
+
+    [Fact]
+    public void Multi_key_chords_are_prefix_aware()
+    {
+        var km = KeyMap.Default;
+        Assert.True(km.IsPrefix("g"));
+        Assert.True(km.IsPrefix("z"));
+        Assert.False(km.IsPrefix("j"));
+        Assert.Equal(EditorAction.GoTop, km.Resolve("g g"));
+        Assert.Equal(EditorAction.FoldToggle, km.Resolve("z a"));
+        Assert.Equal(EditorAction.NextHeading, km.Resolve("] ]"));
+    }
+
+    [Fact]
+    public void Key_events_map_to_chord_tokens()
+    {
+        Assert.Equal("j", KeyMap.TokenFor(new KeyEvent(KeyKind.Char, 'j')));
+        Assert.Equal("G", KeyMap.TokenFor(new KeyEvent(KeyKind.Char, 'G')));
+        Assert.Equal("ctrl+d", KeyMap.TokenFor(new KeyEvent(KeyKind.Char, 'd', Ctrl: true)));
+        Assert.Equal("space", KeyMap.TokenFor(new KeyEvent(KeyKind.Char, ' ')));
+        Assert.Equal("shift+tab", KeyMap.TokenFor(new KeyEvent(KeyKind.Tab, Shift: true)));
+        Assert.Equal("alt+left", KeyMap.TokenFor(new KeyEvent(KeyKind.Left, Alt: true)));
+        Assert.Null(KeyMap.TokenFor(new KeyEvent(KeyKind.MouseClick)));
     }
 }

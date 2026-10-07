@@ -33,6 +33,10 @@ public sealed class TerminalTheme
     /// <summary>Distinct accent for H3 headings.</summary>
     public required Rgb H3 { get; init; }
 
+    /// <summary>Background/foreground of selected rows (overlays) and mark-mode selections.</summary>
+    public Rgb SelectionBackground { get; init; }
+    public Rgb SelectionForeground { get; init; }
+
     public bool IsDark { get; init; }
 
     public static TerminalTheme Dark { get; } = new()
@@ -55,6 +59,8 @@ public sealed class TerminalTheme
         H1 = Rgb.FromHex("#d2a8ff"),
         H2 = Rgb.FromHex("#79c0ff"),
         H3 = Rgb.FromHex("#56d364"),
+        SelectionBackground = Rgb.FromHex("#1f6feb"),
+        SelectionForeground = Rgb.FromHex("#ffffff"),
     };
 
     public static TerminalTheme Light { get; } = new()
@@ -77,6 +83,8 @@ public sealed class TerminalTheme
         H1 = Rgb.FromHex("#8250df"),
         H2 = Rgb.FromHex("#0550ae"),
         H3 = Rgb.FromHex("#1a7f37"),
+        SelectionBackground = Rgb.FromHex("#0969da"),
+        SelectionForeground = Rgb.FromHex("#ffffff"),
     };
 
     public static TerminalTheme For(bool dark) => dark ? Dark : Light;
@@ -113,6 +121,8 @@ public sealed class TerminalTheme
             H1 = Pick(ct.H1, b.H1),
             H2 = Pick(ct.H2, b.H2),
             H3 = Pick(ct.H3, b.H3),
+            SelectionBackground = Pick(ct.Accent, b.SelectionBackground),
+            SelectionForeground = b.SelectionForeground,
         };
     }
 }

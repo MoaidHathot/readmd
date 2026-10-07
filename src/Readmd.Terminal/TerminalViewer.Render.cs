@@ -88,6 +88,7 @@ public sealed partial class TerminalViewer
                 if (!handledAny)
                 {
                     Thread.Sleep(16);
+                    TickPendingChord();
                     if (_statusMessage is not null && DateTime.UtcNow > _statusUntil)
                     {
                         _statusMessage = null;
@@ -243,6 +244,7 @@ public sealed partial class TerminalViewer
             // Also skip on the single clear-only frame after a deep clear (see above).
             if (!_helpMode && !_tocMode && !suppressDiagramsThisFrame)
                 DrawDiagrams(height);
+            DrawHintLabels();
             DrawStatusBar();
 
             if (_tocMode) DrawTocOverlay();
@@ -280,6 +282,8 @@ public sealed partial class TerminalViewer
         int col = 0;
         width = Math.Max(1, width - offset);
         bool lineSelected = _selAnchor is not null && LineInSelection(lineIndex);
+        bool lineHasHit = _hitLines.Count > 0 && _hitLines.Contains(line);
+        bool lineHasActiveLink = _activeLinkOrdinal >= 0;
         foreach (var span in line.Spans)
         {
             if (col >= width) break;
@@ -290,9 +294,9 @@ public sealed partial class TerminalViewer
             if (col + spanWidth > width) { text = TextWidth.TrimToWidth(text, Math.Max(0, width - col)); spanWidth = TextWidth.Of(text); }
 
             // Search highlight?
-            if (_searchHits.Count > 0 && SpanHasHit(lineIndex))
+            if (lineHasHit)
             {
-                DrawSpanWithHighlight(line, lineIndex, span, ref col, width);
+                DrawSpanWithHighlight(line, span, ref col, width);
                 continue;
             }
 
@@ -306,8 +310,11 @@ public sealed partial class TerminalViewer
 
             _screen.Reset();
             var bg = span.Background ?? line.LineBackground ?? (_solidBackground ? _theme.Background : (Rgb?)null);
+            // The Tab-cycled active link is drawn inverted so it's obvious which link Enter will open.
+            if (lineHasActiveLink && span.LinkId == _activeLinkOrdinal) bg = _theme.SelectionBackground;
             if (bg is { } b) _screen.SetBackground(b);
-            if (span.Color is { } c) _screen.SetForeground(c);
+            if (lineHasActiveLink && span.LinkId == _activeLinkOrdinal) _screen.SetForeground(_theme.SelectionForeground);
+            else if (span.Color is { } c) _screen.SetForeground(c);
             else _screen.SetForeground(_theme.Text);
             if (span.Style != CellStyle.None) _screen.SetStyle(span.Style);
             _screen.Write(text);
@@ -324,21 +331,20 @@ public sealed partial class TerminalViewer
         _screen.Reset();
     }
 
-    private bool SpanHasHit(int lineIndex) => _searchHits.Any(h => h.Line == lineIndex);
-
-    private void DrawSpanWithHighlight(DisplayLine line, int lineIndex, StyledSpan span, ref int col, int width)
+    private void DrawSpanWithHighlight(DisplayLine line, StyledSpan span, ref int col, int width)
     {
         // Render grapheme-by-grapheme so we can flip background on hits within this line, advancing
         // by display width so wide glyphs stay aligned with the terminal cursor and hit columns.
-        var hits = _searchHits.Where(h => h.Line == lineIndex).ToList();
-        var active = _searchHitIndex >= 0 && _searchHitIndex < _searchHits.Count ? _searchHits[_searchHitIndex] : (Line: -1, Col: -1, Len: 0);
+        var hits = _searchHits.Where(h => ReferenceEquals(h.Line, line)).ToList();
+        var active = _searchHitIndex >= 0 && _searchHitIndex < _searchHits.Count ? _searchHits[_searchHitIndex] : default;
+        bool activeOnLine = active.Line is not null && ReferenceEquals(active.Line, line);
         foreach (var ch in TextWidth.Graphemes(span.Text))
         {
             int gw = TextWidth.ElementWidth(ch);
             if (col + gw > width) break;
             int here = col;
             bool isHit = hits.Any(h => here >= h.Col && here < h.Col + h.Len);
-            bool isActive = active.Line == lineIndex && here >= active.Col && here < active.Col + active.Len;
+            bool isActive = activeOnLine && here >= active.Col && here < active.Col + active.Len;
             _screen.Reset();
             if (isHit)
             {
@@ -659,15 +665,26 @@ public sealed partial class TerminalViewer
     {
         int row = _screen.Height - 1;
         _screen.MoveTo(row, 0).ClearLine();
-        _screen.SetBackground(_theme.IsDark ? new Rgb(22, 27, 34) : new Rgb(246, 248, 250));
+        _screen.SetBackground(_theme.BackgroundElevated);
         _screen.SetForeground(_theme.Muted);
 
         string left;
         if (_searchMode)
         {
-            left = $" /{_searchQuery}";
-            if (_searchHits.Count > 0) left += $"  [{_searchHitIndex + 1}/{_searchHits.Count}]";
+            string flags = (_searchRegex ? " re" : "") + (EffectiveCaseSensitive ? " Aa" : "");
+            left = $" /{_searchQuery}▏";
+            if (flags.Length > 0) left += $" [{flags.Trim()}]";
+            if (_searchError is not null) left += "  (invalid: " + Truncate(_searchError, 30) + ")";
+            else if (_searchHits.Count > 0) left += $"  [{_searchHitIndex + 1}/{_searchHits.Count}]";
             else if (_searchQuery.Length > 0) left += "  (no matches)";
+        }
+        else if (_commandMode)
+        {
+            left = $" :{_commandText}▏";
+        }
+        else if (_hintMode)
+        {
+            left = $" link hints: type a label{(_hintTyped.Length > 0 ? " (" + _hintTyped + "…)" : "")}  esc cancels";
         }
         else if (_statusMessage is not null)
         {
@@ -677,8 +694,11 @@ public sealed partial class TerminalViewer
         {
             int pct = _lines.Count <= ViewportHeight ? 100
                 : (int)(100.0 * _scroll / Math.Max(1, _lines.Count - ViewportHeight));
-            left = $" {Path.GetFileName(_currentPath)}  {pct}%";
+            left = $" {Breadcrumb()}  {pct}%";
+            if (_searchHits.Count > 0 && _searchHitIndex >= 0) left += $"  /{Truncate(_searchQuery, 16)} {_searchHitIndex + 1}/{_searchHits.Count}";
             if (_selectionMode) left += "  [SELECT]";
+            if (_count > 0) left += $"  {_count}";
+            if (_pendingChord.Count > 0) left += "  " + string.Join("", _pendingChord);
         }
 
         // Pick a help hint that fits the available width (vim keys shown when there's room). Built
@@ -687,11 +707,11 @@ public sealed partial class TerminalViewer
         var k = _keyMap;
         string j = k.Label(EditorAction.ScrollDown, "j"), kk = k.Label(EditorAction.ScrollUp, "k");
         string find = k.Label(EditorAction.Search, "/"), toc = k.Label(EditorAction.Toc, "t"), quit = k.Label(EditorAction.Quit, "q");
-        string help = width >= 112
-            ? $"{j}/{kk}·gg/G·mouse move  Ctrl+f/b·d/u page  {find}:search {k.Label(EditorAction.SearchNext, "n")}/N  {toc}:toc  {k.Label(EditorAction.ToggleTheme, "[")}:theme {k.Label(EditorAction.ToggleBackground, "]")}:bg  {k.Label(EditorAction.Rerender, "r")}:refresh  {k.Label(EditorAction.OpenInBrowser, "o")}:browser  {k.Label(EditorAction.Help, "?")}:help  {quit}:quit "
-            : width >= 72
-                ? $"{j}/{kk} gg/G  Ctrl+f/b page  {find}:find  {toc}:toc  {k.Label(EditorAction.ToggleTheme, "[")}/{k.Label(EditorAction.ToggleBackground, "]")}:theme/bg  {quit}:quit "
-                : $"{j}/{kk} {find}:find {toc}:toc {quit}:quit ";
+        string help = width >= 120
+            ? $"{j}/{kk}·gg/G move  Ctrl+f/b·d/u page  {find}:search {k.Label(EditorAction.SearchNext, "n")}/N  {toc}:toc  {k.Label(EditorAction.LinkHints, "f")}:links  {k.Label(EditorAction.Yank, "y")}:copy  za:fold  {k.Label(EditorAction.ToggleTheme, "[")}:theme  {k.Label(EditorAction.OpenInBrowser, "o")}:browser  {k.Label(EditorAction.Help, "?")}:help  {quit}:quit "
+            : width >= 80
+                ? $"{j}/{kk} gg/G  Ctrl+f/b page  {find}:find  {toc}:toc  {k.Label(EditorAction.LinkHints, "f")}:links  {k.Label(EditorAction.Help, "?")}:help  {quit}:quit "
+                : $"{j}/{kk} {find}:find {toc}:toc {k.Label(EditorAction.Help, "?")}:help {quit}:quit ";
         var sb = new StringBuilder();
         sb.Append(left);
         int leftW = TextWidth.Of(left), helpW = TextWidth.Of(help);
@@ -701,6 +721,26 @@ public sealed partial class TerminalViewer
         var text = TextWidth.TrimToWidth(sb.ToString(), width);
         _screen.Write(text);
         _screen.Reset();
+    }
+
+    /// <summary>"file.md › Section › Subsection" for the heading the viewport is in.</summary>
+    private string Breadcrumb()
+    {
+        var name = Path.GetFileName(_currentPath);
+        if (_toc.Count == 0) return name;
+        // Walk the TOC to the deepest heading at or above the top of the viewport, keeping ancestors.
+        var trail = new List<TocEntry>();
+        foreach (var e in _toc)
+        {
+            int line = FindHeadingLine(e.Id);
+            if (line < 0 || line > _scroll) continue;
+            while (trail.Count > 0 && trail[^1].Level >= e.Level) trail.RemoveAt(trail.Count - 1);
+            trail.Add(e);
+        }
+        if (trail.Count == 0) return name;
+        int room = Math.Max(20, _screen.Width / 2);
+        var crumb = name + " › " + string.Join(" › ", trail.Select(t => t.Title));
+        return TextWidth.Of(crumb) <= room ? crumb : "… › " + Truncate(trail[^1].Title, room - 6);
     }
 
     // ---------------- focused image view ----------------

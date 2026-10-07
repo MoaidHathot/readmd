@@ -216,6 +216,8 @@ public sealed partial class MarkdownTerminalRenderer
             if (_inPre) FlushPre();
             if (_inTable) FlushTable();
             FlushParagraph();
+            // A <details> whose body lives in later Markdown blocks still needs its header now.
+            EnsureDetailsHeader();
             r._html.ResetInline();
         }
 
@@ -296,9 +298,12 @@ public sealed partial class MarkdownTerminalRenderer
                 case "details":
                     FlushParagraph();
                     r._detailsDepth++;
+                    r.OpenDetails(tok.HasAttr("open"));
+                    _detailsNeedsHeader = true;
                     return;
                 case "summary":
                     FlushParagraph(); _inSummary = true; _summary.Clear();
+                    _detailsNeedsHeader = false;
                     return;
                 case "table":
                     FlushParagraph(); _inTable = true; _rows = []; _rowIsHeader = []; _aligns = []; _inThead = false;
@@ -360,7 +365,7 @@ public sealed partial class MarkdownTerminalRenderer
                     return;
                 case "details":
                     FlushParagraph();
-                    if (r._detailsDepth > 0) { r._detailsDepth--; r._detailsIndent = Math.Max(0, r._detailsIndent - 2); }
+                    if (r._openDetails.Count > 0) { r.CloseDetails(); }
                     r.AddBlank();
                     return;
                 case "picture": _inPicture = false; return;
@@ -441,15 +446,29 @@ public sealed partial class MarkdownTerminalRenderer
             var spans = new List<StyledSpan> { new("▾ ", Theme.Accent, CellStyle.Bold) };
             if (_summary.Count == 0) spans.Add(new StyledSpan("Details", Theme.Accent, CellStyle.Bold));
             else spans.AddRange(_summary);
+            int headerLine = r._lines.Count;
             r.EmitWrapped(spans, Indent);
+            r.TagBlock(headerLine, BlockKind.Details, 0, text: string.Concat(_summary.Select(s => s.Text)));
+            r.SetDetailsHeader(headerLine);
             // Body blocks that follow (in later Markdown blocks) are indented under the summary.
             r._detailsIndent += 2;
+            _detailsNeedsHeader = false;
+        }
+
+        // A <details> without a <summary> still needs a header line to fold from.
+        private bool _detailsNeedsHeader;
+        private void EnsureDetailsHeader()
+        {
+            if (!_detailsNeedsHeader) return;
+            _summary.Clear();
+            EmitSummary();
         }
 
         private void FlushParagraph()
         {
             if (_skipDepth > 0) { _para.Clear(); return; }
             bool hasText = _para.Any(s => !string.IsNullOrWhiteSpace(s.Text) && s.Text != "\n");
+            if ((hasText || _paraImages.Count > 0) && _detailsNeedsHeader) EnsureDetailsHeader();
             int start = r._lines.Count;
             int indent = Indent;
             string? gutter = null; Rgb? gutterColor = null; bool repeat = true;
